@@ -1,0 +1,327 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body { background:#242424; color:#f5f5f5; font:14px Inter, sans-serif; margin:0; padding:20px; }
+      h3 { font-size:18px; margin:0 0 6px; } p { color:#b8b8b8; line-height:1.45; margin:0 0 18px; }
+      .card { background:#303030; border:1px solid #484848; border-radius:12px; margin:14px 0; padding:12px; }
+      .header { align-items:center; display:flex; justify-content:space-between; margin-bottom:8px; }
+      .header strong { font-size:14px; } button { border:0; border-radius:9px; box-sizing:border-box; color:#f5f5f5; cursor:pointer; font:inherit; padding:11px 12px; }
+      #refresh { background:#414141; padding:7px 10px; } #refresh:hover { background:#505050; }
+      .project { align-items:center; background:#3b3b3b; display:flex; justify-content:space-between; margin:7px 0; text-align:left; width:100%; }
+      .project:hover { background:#484848; } .project.selected { background:#0c5cce; outline:1px solid #6ba5ff; }
+      .check { font-size:17px; font-weight:700; } #export { background:#0d78f2; font-weight:700; width:100%; } #export:hover:not(:disabled) { background:#2588fa; }
+      #export:disabled { cursor:not-allowed; opacity:.48; }
+      .mode-field { margin:12px 0; } .mode-field label { color:#b8b8b8; display:block; margin-bottom:6px; }
+      .mode-field select { background:#1f1f1f; border:1px solid #5c5c5c; border-radius:8px; box-sizing:border-box; color:#f5f5f5; font:inherit; padding:9px; width:100%; }
+      .mode-field select:focus-visible { border-color:#6ba5ff; outline:2px solid #6ba5ff; outline-offset:1px; }
+      .mode-help { font-size:12px; margin:6px 0 0; }
+      #selection-summary { background:#303030; border-radius:8px; color:#d6d6d6; margin:12px 0; padding:10px 12px; }
+      .destination { background:#303030; border-radius:8px; display:flex; flex-direction:column; gap:4px; margin:12px 0; padding:10px 12px; }
+      .destination span { color:#b8b8b8; font-size:11px; text-transform:uppercase; }
+      #target { font-weight:600; margin:0; overflow-wrap:anywhere; }
+      input { background:#1f1f1f; border:1px solid #5c5c5c; border-radius:8px; box-sizing:border-box; color:#f5f5f5; font:inherit; margin:4px 0; padding:9px; width:100%; }
+      #manual-toggle { background:#414141; margin-top:2px; width:100%; } #manual-toggle:hover, #use-manual:hover { background:#505050; }
+      #manual-panel[hidden] { display:none; } #use-manual { background:#414141; margin-top:6px; width:100%; }
+      #status { color:#b8b8b8; margin-top:12px; min-height:20px; white-space:pre-wrap; }
+      #export-results { background:#303030; border:1px solid #484848; border-radius:10px; margin-top:10px; padding:10px 12px; }
+      #export-files { max-height:140px; margin:8px 0 0; overflow-y:auto; padding-left:20px; }
+      #export-files li { font:12px ui-monospace, monospace; margin:5px 0; overflow-wrap:anywhere; }
+      #export-files a { color:#8ab8ff; overflow-wrap:anywhere; }
+      .main-header { align-items:center; display:flex; justify-content:space-between; }
+      #settings-open { background:#414141; font-size:18px; padding:7px 10px; }
+      #settings-open:hover, #settings-back:hover { background:#505050; }
+      #main-view[hidden], #settings-view[hidden] { display:none; }
+      .mode-option { background:#303030; border:1px solid #484848; border-radius:12px; margin:12px 0; padding:12px; }
+      .mode-option label { align-items:flex-start; cursor:pointer; display:flex; gap:9px; }
+      .mode-option input[type="radio"] { flex:0 0 auto; margin:3px 0 0; width:auto; }
+      .mode-option label span { display:flex; flex-direction:column; gap:4px; }
+      .mode-option label small, .mode-guide { color:#b8b8b8; line-height:1.45; }
+      .mode-guide { font-size:12px; margin:10px 0 0; }
+      .mode-guide ol { margin:6px 0 0; padding-left:20px; }
+      .mode-guide li { margin:4px 0; }
+      #settings-back { background:#414141; padding:7px 10px; }
+    </style>
+  </head>
+  <body>
+    <div id="main-view">
+      <div class="main-header"><h3>Figma to JSON</h3><button id="settings-open" aria-label="Open settings" title="Settings">⚙</button></div>
+      <p>Select frames, components, component sets, or instances, then export with your selected connection mode.</p>
+      <div class="local-only" id="local-controls">
+        <div class="card"><div class="header"><strong>Active folders</strong><button id="refresh">Refresh</button></div><div id="projects"></div></div>
+        <button id="manual-toggle" aria-expanded="false">Manual connection</button>
+        <div class="card" id="manual-panel" hidden><div class="header"><strong>Manual connection</strong></div><input id="manual-url" placeholder="Bridge URL, e.g. http://localhost:3847" /><input id="manual-token" placeholder="Bridge token from the running helper" /><button id="use-manual">Use connection</button></div>
+      </div>
+      <div id="selection-summary" role="status" aria-live="polite">Checking selected items…</div>
+      <div class="mode-field"><label for="export-mode">Export mode</label><select id="export-mode" aria-describedby="mode-help"><option value="visible-only">Visible only</option><option value="no-filter">No filter</option></select><p class="mode-help" id="mode-help"></p></div>
+      <div class="mode-field"><label for="asset-mode">Export content</label><select id="asset-mode" aria-describedby="asset-mode-help"><option value="json-only">JSON only</option><option value="with-assets">JSON + assets</option></select><p class="mode-help" id="asset-mode-help">Exports JSON only; skips image and SVG extraction.</p></div>
+      <div class="destination"><span>Destination</span><strong id="target">Choose an active folder above.</strong></div>
+      <button id="export" aria-busy="false" disabled>Export selected</button>
+      <div id="status" role="status" aria-live="polite"></div>
+      <div id="export-results" hidden><strong id="export-result-heading"></strong><ul id="export-files"></ul></div>
+    </div>
+    <div id="settings-view" hidden>
+      <div class="main-header"><button id="settings-back">← Back</button><h3>Settings</h3></div>
+      <p>Choose where the exported JSON goes. This choice is saved for next time.</p>
+      <section class="mode-option">
+        <label><input type="radio" name="connection-mode" value="local-server" /><span><strong>Local server (MCP)</strong><small>Save JSON, images, and explicitly named SVG icons in any folder for your local Codex MCP tools.</small></span></label>
+        <div class="mode-guide"><strong>How to use</strong><ol><li>Open a terminal in the folder you want to use, then run <code>node "/path/to/figma-mcp/bin/figma-mcp.mjs"</code>. It uses that current folder. You can instead pass <code>--output-dir "PATH_TO_FOLDER"</code>. Keep the command running.</li><li>Return to the exporter and select the folder that appears, or enter a manual connection.</li><li>Export. JSON files go into <code>exported</code>; image fills and explicitly named icons are saved in sibling <code>assets</code>. Keyboard-named subtrees are excluded from SVG exports. JSON nodes show <code>name-match</code>, <code>excluded-keyboard</code>, or <code>not-detected</code>.</li></ol></div>
+      </section>
+      <section class="mode-option">
+        <label><input type="radio" name="connection-mode" value="download" /><span><strong>Download JSON</strong><small>Export files from Figma without starting a local server.</small></span></label>
+        <div class="mode-guide"><strong>How to use</strong><ol><li>Select the frames or components to export.</li><li>Choose JSON only or JSON + assets in the main view, then click <strong>Prepare downloads</strong>.</li><li>Click each link. Files download separately; to preserve asset paths, put JSON in <code>exported</code> and assets in sibling <code>assets</code> folders.</li></ol></div>
+      </section>
+    </div>
+    <script>
+      const status = document.getElementById('status');
+      const target = document.getElementById('target');
+      const mainView = document.getElementById('main-view');
+      const settingsView = document.getElementById('settings-view');
+      const localControls = document.getElementById('local-controls');
+      const selectionSummary = document.getElementById('selection-summary');
+      const exportButton = document.getElementById('export');
+      const exportResults = document.getElementById('export-results');
+      const exportResultHeading = document.getElementById('export-result-heading');
+      const exportFiles = document.getElementById('export-files');
+      const connectionModeRadios = [...document.querySelectorAll('input[name="connection-mode"]')];
+      let active = null;
+      let connectionMode = 'local-server';
+      let selectedNodeCount = 0;
+      let exportableSelectionCount = 0;
+      let visibleExportableCount = 0;
+      let exporting = false;
+      let exportingTo = '';
+      let userSelectedConnectionMode = false;
+      let downloadUrls = [];
+
+      const getCurrentExportableCount = () => document.getElementById('export-mode').value === 'visible-only'
+        ? visibleExportableCount
+        : exportableSelectionCount;
+      const updateExportButton = () => {
+        const needsBridge = connectionMode === 'local-server';
+        exportButton.disabled = exporting || getCurrentExportableCount() === 0 || (needsBridge && !active);
+        exportButton.setAttribute('aria-busy', String(exporting));
+        exportButton.textContent = exporting
+          ? (connectionMode === 'download' ? 'Preparing…' : 'Exporting…')
+          : (connectionMode === 'download' ? 'Prepare downloads' : 'Export selected');
+      };
+      const setExporting = (value) => {
+        exporting = value;
+        updateExportButton();
+      };
+      const renderTarget = () => {
+        target.textContent = connectionMode === 'download'
+          ? 'Browser Downloads folder; click each file below.'
+          : active ? (active.exportDirectory || active.name) : 'Choose an active folder above.';
+        updateExportButton();
+      };
+      const renderSelectionSummary = () => {
+        const count = getCurrentExportableCount();
+        if (count > 0) {
+          selectionSummary.textContent = count === selectedNodeCount
+            ? `${count} exportable item${count === 1 ? '' : 's'} selected.`
+            : `${count} of ${selectedNodeCount} selected items are ready to export.`;
+        } else if (selectedNodeCount > 0 && exportableSelectionCount > 0 && visibleExportableCount === 0) {
+          selectionSummary.textContent = 'Selected items are hidden. Switch to No filter to include them.';
+        } else if (selectedNodeCount > 0) {
+          selectionSummary.textContent = 'The current selection has no exportable frames, components, component sets, or instances.';
+        } else {
+          selectionSummary.textContent = 'Nothing selected. Select a frame, component, component set, or instance.';
+        }
+        updateExportButton();
+      };
+      const clearExportResults = () => {
+        downloadUrls.forEach((url) => URL.revokeObjectURL(url));
+        downloadUrls = [];
+        exportFiles.replaceChildren();
+        exportResultHeading.textContent = '';
+        exportResults.hidden = true;
+      };
+      const renderSavedFiles = (files, partial = false) => {
+        exportFiles.replaceChildren();
+        const names = Array.isArray(files) ? files.filter((name) => typeof name === 'string') : [];
+        if (!names.length) { exportResults.hidden = true; return; }
+        exportResultHeading.textContent = `${partial ? 'Files saved before the error' : 'Saved files'} (${names.length})`;
+        names.forEach((filename) => {
+          const item = document.createElement('li');
+          item.textContent = filename;
+          exportFiles.appendChild(item);
+        });
+        exportResults.hidden = false;
+      };
+      const renderDownloadFile = (filename, content, mimeType = 'application/json') => {
+        const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
+        downloadUrls.push(url);
+        const item = document.createElement('li');
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.textContent = `Download ${filename}`;
+        item.appendChild(link);
+        exportFiles.appendChild(item);
+        exportResultHeading.textContent = `Ready to download (${exportFiles.children.length})`;
+        exportResults.hidden = false;
+      };
+      const renderDownloadAsset = (filename, mimeType, base64) => {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        renderDownloadFile(filename, bytes, mimeType);
+      };
+      const renderModeHelp = () => {
+        document.getElementById('mode-help').textContent = document.getElementById('export-mode').value === 'visible-only'
+          ? 'Omits exported content marked hidden.'
+          : 'Includes hidden content as well.';
+      };
+      const applyConnectionMode = (mode) => {
+        connectionMode = mode === 'download' ? 'download' : 'local-server';
+        connectionModeRadios.forEach((radio) => { radio.checked = radio.value === connectionMode; });
+        localControls.hidden = connectionMode !== 'local-server';
+        renderTarget();
+        renderSelectionSummary();
+      };
+      const renderProjects = (projects) => {
+        const container = document.getElementById('projects'); container.replaceChildren();
+        if (!projects.length) container.textContent = 'No active folders. Start the helper from your output folder, or pass --output-dir.';
+        projects.forEach((data) => {
+          const project = {
+            name: (data.project || data.exportDirectory || 'Folder').split(/[\\/]/).filter(Boolean).pop() || 'Folder',
+            exportDirectory: data.exportDirectory || '',
+            url: `http://localhost:${data.port}`,
+            token: data.token,
+          };
+          const button = document.createElement('button');
+          button.className = `project${active?.url === project.url ? ' selected' : ''}`;
+          const name = document.createElement('span');
+          name.textContent = project.name;
+          button.appendChild(name);
+          if (active?.url === project.url) {
+            const check = document.createElement('span');
+            check.className = 'check';
+            check.textContent = '✓';
+            button.appendChild(check);
+          }
+          button.onclick = () => {
+            active = project;
+            renderTarget();
+            parent.postMessage({ pluginMessage: { type: 'scan-bridges' } }, '*');
+          };
+          container.appendChild(button);
+        });
+      };
+      const scan = () => {
+        if (connectionMode !== 'local-server') return;
+        status.textContent = 'Scanning active folders…';
+        parent.postMessage({ pluginMessage: { type: 'scan-bridges' } }, '*');
+      };
+      const openSettings = () => { mainView.hidden = true; settingsView.hidden = false; };
+      const closeSettings = () => { settingsView.hidden = true; mainView.hidden = false; };
+
+      document.getElementById('settings-open').onclick = openSettings;
+      document.getElementById('settings-back').onclick = closeSettings;
+      document.querySelectorAll('input[name="connection-mode"]').forEach((radio) => {
+        radio.onchange = () => {
+          if (!radio.checked) return;
+          userSelectedConnectionMode = true;
+          applyConnectionMode(radio.value);
+          clearExportResults();
+          parent.postMessage({ pluginMessage: { type: 'set-connection-mode', connectionMode } }, '*');
+          if (connectionMode === 'local-server') scan();
+          else status.textContent = 'Download mode is ready. No local server is needed.';
+        };
+      });
+      document.getElementById('manual-toggle').onclick = () => {
+        const panel = document.getElementById('manual-panel');
+        const open = panel.hidden;
+        panel.hidden = !open;
+        document.getElementById('manual-toggle').setAttribute('aria-expanded', String(open));
+        parent.postMessage({ pluginMessage: { type: 'toggle-manual', open } }, '*');
+      };
+      document.getElementById('use-manual').onclick = () => {
+        const url = document.getElementById('manual-url').value.trim().replace(/\/$/, '');
+        const token = document.getElementById('manual-token').value.trim();
+        if (!url || !token) { status.textContent = 'Enter both bridge URL and token.'; return; }
+        active = { name: url.replace(/^https?:\/\//, ''), url, token };
+        renderTarget();
+        status.textContent = 'Manual connection selected.';
+      };
+      document.getElementById('export-mode').onchange = () => { renderModeHelp(); renderSelectionSummary(); };
+      document.getElementById('asset-mode').onchange = () => {
+        document.getElementById('asset-mode-help').textContent = document.getElementById('asset-mode').value === 'with-assets'
+          ? 'Includes image files and detected SVG icons.'
+          : 'Exports JSON only; skips image and SVG extraction.';
+      };
+      document.getElementById('refresh').onclick = scan;
+      renderModeHelp();
+      renderTarget();
+      status.textContent = 'Loading saved settings…';
+      exportButton.onclick = () => {
+        if (connectionMode === 'local-server' && (!active || !active.token)) { status.textContent = 'Select an active local folder first.'; return; }
+        if (!getCurrentExportableCount()) { status.textContent = 'Select at least one exportable item first.'; return; }
+        exportingTo = connectionMode === 'download' ? 'your browser Downloads folder' : active.name;
+        clearExportResults();
+        setExporting(true);
+        status.textContent = connectionMode === 'download' ? 'Preparing JSON files…' : 'Exporting…';
+        const pluginMessage = {
+          type: 'export-selection',
+          connectionMode,
+          exportMode: document.getElementById('export-mode').value,
+          includeAssets: document.getElementById('asset-mode').value === 'with-assets',
+        };
+        if (connectionMode === 'local-server') {
+          pluginMessage.bridge = active.url;
+          pluginMessage.token = active.token;
+        }
+        parent.postMessage({ pluginMessage }, '*');
+      };
+      onmessage = (event) => {
+        const message = event.data.pluginMessage;
+        if (!message) return;
+        if (message.type === 'connection-mode') {
+          if (!userSelectedConnectionMode) applyConnectionMode(message.connectionMode);
+          status.textContent = connectionMode === 'local-server' ? 'Ready. Scanning active folders…' : 'Download mode is ready. No local server is needed.';
+          if (connectionMode === 'local-server') scan();
+        }
+        if (message.type === 'bridge-results') {
+          renderProjects(message.projects);
+          status.textContent = message.projects.length ? `Found ${message.projects.length} active folder connection(s).` : `Bridge scan failed: ${message.errors?.[0] || 'No bridge responded.'}`;
+        }
+        if (message.type === 'selection-summary') {
+          selectedNodeCount = Math.max(0, Number(message.selectedCount) || 0);
+          exportableSelectionCount = Math.max(0, Number(message.exportableCount) || 0);
+          visibleExportableCount = Math.max(0, Number(message.visibleExportableCount) || 0);
+          renderSelectionSummary();
+        }
+        if (message.type === 'download-file') renderDownloadFile(message.filename, message.content);
+        if (message.type === 'download-asset') renderDownloadAsset(message.filename, message.mimeType, message.base64);
+        if (message.type === 'download-complete') {
+          setExporting(false);
+          const assetCount = Math.max(0, Number(message.assetCount) || 0);
+          const assetSummary = assetCount ? ` and ${assetCount} asset file(s)` : '';
+          status.textContent = `${message.count} JSON file(s)${assetSummary} ready. Click each download link below.`;
+          exportingTo = '';
+        }
+        if (message.type === 'export-complete') {
+          setExporting(false);
+          renderSavedFiles(message.files);
+          const assetSummary = message.includeAssets === false
+            ? ' Assets were skipped.'
+            : message.assets?.length
+              ? ` Saved ${message.assets.length} asset file(s) to assets/.`
+              : ' No image or icon assets were detected; vector geometry remains in the JSON.';
+          status.textContent = `Exported ${message.count} item(s) to ${exportingTo}.${assetSummary}`;
+          exportingTo = '';
+        }
+        if (message.type === 'export-error') {
+          setExporting(false);
+          renderSavedFiles(message.files, true);
+          status.textContent = `Error: ${message.error}`;
+          exportingTo = '';
+        }
+      };
+      parent.postMessage({ pluginMessage: { type: 'selection-summary-request' } }, '*');
+      parent.postMessage({ pluginMessage: { type: 'get-connection-mode' } }, '*');
+    </script>
+  </body>
+</html>
