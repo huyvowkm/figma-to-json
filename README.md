@@ -2,6 +2,8 @@
 
 A local Figma exporter for selected frames and components. Save each selection as a separate JSON file, optionally include raster image paints and named SVG icons, and read folder exports through Codex MCP tools.
 
+I built this after running into rate limits while requesting Figma design data through MCP. Those requests return JSON, so I wanted a way to export selected designs once and keep the data locally. Figma to JSON makes those files available through a local MCP server, reducing repeat requests for designs that have already been exported.
+
 ## Features
 
 - Export selected frames, components, component sets, and instances. Multiple selections produce one JSON file per selected item.
