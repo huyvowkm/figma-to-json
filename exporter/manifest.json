@@ -1,0 +1,20 @@
+{
+  "name": "Figma to JSON",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": [
+      "http://localhost:3847/", "http://localhost:3848/", "http://localhost:3849/",
+      "http://localhost:3850/", "http://localhost:3851/", "http://localhost:3852/",
+      "http://localhost:3853/", "http://localhost:3854/", "http://localhost:3855/",
+      "http://localhost:3856/", "http://localhost:3857/", "http://localhost:3858/",
+      "http://localhost:3859/", "http://localhost:3860/", "http://localhost:3861/",
+      "http://localhost:3862/", "http://localhost:3863/", "http://localhost:3864/",
+      "http://localhost:3865/", "http://localhost:3866/", "http://localhost:3867/"
+    ],
+    "reasoning": "Send selected design exports only to a local bridge running on this computer."
+  }
+}
