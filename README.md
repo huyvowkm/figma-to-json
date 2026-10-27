@@ -62,11 +62,11 @@ Figma downloads each selected item as its own JSON file. If you choose **JSON + 
 
 ### Build the server
 
-Follow the build steps above. The launcher registers a local stdio MCP server with Codex for the selected output folder, so Codex CLI must be installed and available as `codex` in your terminal.
+Follow the build steps above. The launcher registers a local stdio MCP server with Codex for the selected project folder, so Codex CLI must be installed and available as `codex` in your terminal.
 
 ### Start the helper in the folder you want to use
 
-Open a terminal in the desired output folder, then run the launcher from your clone. The helper uses the terminal's current directory by default:
+Open a terminal in the desired project folder, then run the launcher from your clone. The helper uses the terminal's current directory by default:
 
 ```sh
 cd ~/Documents/figma-exports
@@ -86,7 +86,7 @@ Set-Location "$HOME\Documents\figma-exports"
 node "C:\path\to\figma-to-json\bin\figma-mcp.mjs"
 ```
 
-The launcher creates `exported/` if needed, registers the folder's MCP server with Codex, and starts the local bridge. Leave this terminal running while exporting. Press **Ctrl+C** to stop the bridge.
+The launcher creates `.figma-cache/exported/` if needed, registers the folder's MCP server with Codex, and starts the local bridge. Leave this terminal running while exporting. Press **Ctrl+C** to stop the bridge. Running it again for the same project reuses the active bridge instead of starting a duplicate.
 
 The bridge listens on `localhost`, starting at port `3847` and trying through `3867` if a port is already in use. The terminal prints the active URL and a temporary connection token. Keep the token private; the plugin uses it to send exports to the running local bridge.
 
@@ -122,13 +122,14 @@ The dark-mode filename marker is based on the selected node's name, variant valu
 ## Output structure
 
 ```text
-figma-exports/
-├── exported/
-│   ├── checkout-visible-only.json
-│   └── settings-no-filter-dark.json
-└── assets/                         # created when assets are exported
-    ├── image-a1b2c3.png
-    └── icon-search-12-34.svg
+figma-project/
+└── .figma-cache/
+    ├── exported/
+    │   ├── checkout-visible-only.json
+    │   └── settings-no-filter-dark.json
+    └── assets/                     # created when assets are exported
+        ├── image-a1b2c3.png
+        └── icon-search-12-34.svg
 ```
 
 JSON filenames follow `<node-name>-<visible-only|no-filter>[-dark].json`. If an export would reuse a JSON filename, the exporter adds a suffix such as `-2` rather than replacing the existing file. Asset references in JSON are relative paths such as `../assets/image-a1b2c3.png`.
@@ -137,11 +138,11 @@ Each JSON file contains export metadata, the source Figma node information, reso
 
 ## Codex MCP tools
 
-The local MCP server exposes these read-only tools for JSON files in the selected output folder:
+The local MCP server exposes these read-only tools for JSON files in `.figma-cache/exported/` inside the selected project folder:
 
 | Tool | Use |
 | --- | --- |
-| `list_screens` | List exported JSON files available in `exported/`. |
+| `list_screens` | List exported JSON files available in `.figma-cache/exported/`. |
 | `get_screen` | Read one exported JSON file by its screen name. |
 | `search_nodes` | Search a screen's node names for a text query. |
 

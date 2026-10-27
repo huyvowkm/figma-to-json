@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const [root, cache] = process.argv.slice(2);
 const token = randomBytes(24).toString('hex');
@@ -59,10 +59,26 @@ const bridge = http.createServer((req, res) => {
   });
 });
 function listen(port) {
-  bridge.once('error', (error) => {
-    if (!process.env.FIGMA_MCP_PORT && error.code === 'EADDRINUSE' && port < 3867) return listen(port + 1);
+  bridge.once('error', async (error) => {
+    if (!process.env.FIGMA_MCP_PORT && error.code === 'EADDRINUSE') {
+      try {
+        const response = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(500) });
+        if (response.ok) {
+          const existing = await response.json();
+          if (resolve(existing.project) === resolve(root)) {
+            if (resolve(existing.exportDirectory) === resolve(join(cache, 'exported'))) {
+              console.log(`Figma bridge already running: http://localhost:${port}\nExport folder: ${join(cache, 'exported')}`);
+              process.exit(0);
+            }
+            console.error(`A bridge for this project is already running at http://localhost:${port} with a different export folder (${existing.exportDirectory}). Stop it before restarting this helper.`);
+            process.exit(1);
+          }
+        }
+      } catch {}
+      if (port < 3867) return listen(port + 1);
+    }
     console.error(`Bridge failed: ${error.message}`); process.exit(1);
   });
-  bridge.listen(port, 'localhost', () => console.log(`Figma bridge ready: http://localhost:${port}\nToken: ${token}\nOutput root: ${root}`));
+  bridge.listen(port, 'localhost', () => console.log(`Figma bridge ready: http://localhost:${port}\nToken: ${token}\nExport folder: ${join(cache, 'exported')}`));
 }
 listen(preferredPort);
