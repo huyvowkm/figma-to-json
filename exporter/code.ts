@@ -6,6 +6,8 @@ figma.showUI(__html__, {
 
 const exportableNodeTypes = new Set(['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE']);
 type ConnectionMode = 'local-server' | 'download';
+type ExportWarning = { format: 'SVG' | 'PNG'; nodeId: string; nodeName: string; message: string };
+type SkippedRender = { format: 'SVG'; nodeId: string; nodeName: string; reason: 'not-rendered' };
 
 function getExportableSelection(): SceneNode[] {
   return figma.currentPage.selection.filter((node) => exportableNodeTypes.has(node.type));
@@ -29,6 +31,7 @@ figma.ui.onmessage = async (message: {
   token?: string;
   exportMode?: 'visible-only' | 'no-filter';
   includeAssets?: boolean;
+  includePreview?: boolean;
   connectionMode?: ConnectionMode;
 }) => {
   if (message.type === 'get-connection-mode') {
@@ -106,25 +109,45 @@ figma.ui.onmessage = async (message: {
   const savedAssets = new Set<string>();
   try {
     const exports = await Promise.all(nodes.map(async (node) => {
-      const exportedJson = await (node as SceneNode & ExportMixin).exportAsync({ format: 'JSON_REST_V1' });
+      const warnings: ExportWarning[] = [];
+      const skippedRenders: SkippedRender[] = [];
+      let exportedJson: unknown;
+      try {
+        exportedJson = await (node as SceneNode & ExportMixin).exportAsync({ format: 'JSON_REST_V1' });
+      } catch (error) {
+        throw new Error(`JSON export failed for "${node.name}" (${node.id}): ${String(error)}`);
+      }
       const figmaJson = exportMode === 'visible-only'
         ? removeInvisibleNodes(exportedJson)
         : exportedJson;
       const includeHidden = exportMode === 'no-filter';
-      const sourceIconClassification = classifyIconNode(node);
-      annotateExportedNodes(figmaJson, node, includeHidden);
-      const variables = await resolveBoundVariables(node, figmaJson);
+      const sourceIconClassification = classifyIconNode(node, false, includeHidden);
+      const tokens = await resolveDesignTokens(node, figmaJson);
       const darkMode = await isDarkMode(node);
       const imageAssets = includeAssets
         ? await collectImageAssets(node, exportMode === 'no-filter', figmaJson)
         : [];
       const iconAssets = includeAssets
-        ? await collectIconSvgAssets(node, includeHidden)
+        ? await collectIconSvgAssets(node, includeHidden, warnings, figmaJson, skippedRenders)
         : [];
       const assets = [...imageAssets, ...iconAssets];
+      const filename = `${slug(node.name)}-${exportMode}${darkMode ? '-dark' : ''}.json`;
+      let preview: { base64: string } | undefined;
+      if (message.includePreview === true) {
+        try {
+          preview = { base64: encodeBase64(await (node as SceneNode & ExportMixin).exportAsync({
+            format: 'PNG',
+            constraint: { type: 'SCALE', value: Math.min(1, 4096 / Math.max(node.width, node.height, 1)) },
+          })) };
+        } catch (error) {
+          warnings.push({ format: 'PNG', nodeId: node.id, nodeName: node.name, message: String(error) });
+        }
+      }
+      annotateExportedNodes(figmaJson, node, includeHidden, iconAssets, warnings, skippedRenders);
       return {
-        filename: `${slug(node.name)}-${exportMode}${darkMode ? '-dark' : ''}.json`,
+        filename,
         assets,
+        preview,
         payload: {
           schemaVersion: 1,
           exportedAt: new Date().toISOString(),
@@ -142,11 +165,16 @@ figma.ui.onmessage = async (message: {
             file: `../assets/${filename}`,
             mimeType,
           })),
-          variables,
+          ...tokens,
+          warnings,
+          skippedRenders,
+          ...(preview ? { preview: { file: `${filename.slice(0, -5)}.png`, mimeType: 'image/png' } } : {}),
           figma: figmaJson,
         },
       };
     }));
+    const warnings = exports.flatMap((entry) => entry.payload.warnings);
+    const skippedRenders = exports.flatMap((entry) => entry.payload.skippedRenders);
 
     if (connectionMode === 'download') {
       const filenameCounts = new Map<string, number>();
@@ -157,6 +185,13 @@ figma.ui.onmessage = async (message: {
         const filename = count === 1
           ? entry.filename
           : `${entry.filename.slice(0, -'.json'.length)}-${count}.json`;
+        if (entry.preview && entry.payload.preview) {
+          entry.payload.preview.file = `${filename.slice(0, -5)}.png`;
+          figma.ui.postMessage({
+            type: 'download-asset', filename: entry.payload.preview.file,
+            mimeType: 'image/png', base64: entry.preview.base64,
+          });
+        }
         figma.ui.postMessage({
           type: 'download-file',
           filename,
@@ -172,7 +207,7 @@ figma.ui.onmessage = async (message: {
           base64: asset.base64,
         });
       }
-      figma.ui.postMessage({ type: 'download-complete', count: exports.length, assetCount: assets.size, connectionMode });
+      figma.ui.postMessage({ type: 'download-complete', count: exports.length, assetCount: assets.size, previewCount: exports.filter((entry) => entry.preview).length, warnings, skippedRenders, connectionMode });
       return;
     }
 
@@ -181,7 +216,7 @@ figma.ui.onmessage = async (message: {
     for (const entry of exports) {
       const response = await fetch(`${bridgeUrl}/export`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': bridgeToken },
-        body: JSON.stringify({ filename: entry.filename, payload: entry.payload, assets: entry.assets }),
+        body: JSON.stringify({ filename: entry.filename, payload: entry.payload, assets: entry.assets, preview: entry.preview }),
       });
       if (!response.ok) throw new Error(await response.text());
       const result: unknown = await response.json();
@@ -189,13 +224,14 @@ figma.ui.onmessage = async (message: {
         throw new Error('The local bridge did not return the saved filename.');
       }
       savedFiles.push(result.saved);
+      if (typeof result.preview === 'string') savedFiles.push(result.preview);
       if (Array.isArray(result.assets)) {
         result.assets.forEach((filename) => {
           if (typeof filename === 'string') savedAssets.add(filename);
         });
       }
     }
-    figma.ui.postMessage({ type: 'export-complete', count: savedFiles.length, files: savedFiles, assets: [...savedAssets], includeAssets, connectionMode });
+    figma.ui.postMessage({ type: 'export-complete', count: exports.length, files: savedFiles, assets: [...savedAssets], warnings, skippedRenders, includeAssets, connectionMode });
   } catch (error) {
     figma.ui.postMessage({ type: 'export-error', error: String(error), files: savedFiles, assets: [...savedAssets], includeAssets, connectionMode });
   }
@@ -264,18 +300,70 @@ function slug(name: string): string {
 
 type IconClassification = {
   isIcon: boolean;
-  iconClassification: 'name-match' | 'excluded-keyboard' | 'not-detected';
+  iconClassification: 'name-match' | 'vector-shape' | 'svg-export-setting' | 'excluded-keyboard' | 'not-detected';
 };
 
-function classifyIconNode(node: SceneNode, insideKeyboard = false): IconClassification {
-  if (insideKeyboard || isKeyboardNodeName(node.name)) {
+function classifyIconNode(node: SceneNode, insideKeyboard = false, includeHidden = false): IconClassification {
+  if (insideKeyboard || isInsideKeyboard(node)) {
     return { isIcon: false, iconClassification: 'excluded-keyboard' };
   }
+  if ('exportSettings' in node && node.exportSettings.some((setting) => setting.format === 'SVG')) {
+    // Explicit asset settings override inferred size/name rules, but never keyboard exclusion.
+    if (!containsKeyboard(node)) return { isIcon: true, iconClassification: 'svg-export-setting' };
+  }
   const normalizedName = node.name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
-  if (/(^|[\s/_-])(?:icon|glyph|symbol|icn|ic)(?=$|[\s/_-])/.test(normalizedName)) {
-    return { isIcon: true, iconClassification: 'name-match' };
+  const named = /(^|[\s/_.:-])(?:icon|icons|glyph|symbol|icn|ic)(?=$|[\s/_.:-])/.test(normalizedName);
+  const isControl = /(^|[\s/_.:-])(?:button|btn|control|input|toolbar|screen|card)(?=$|[\s/_.:-])/.test(normalizedName);
+  const maxSize = named ? 128 : 64;
+  if (!isControl && Number.isFinite(node.width) && Number.isFinite(node.height)
+    && Math.max(node.width, node.height) > 0 && Math.max(node.width, node.height) <= maxSize) {
+    const geometry = inspectIconGeometry(node, includeHidden);
+    // An unnamed filled frame is often a button or badge; descend to its glyph instead.
+    const paintedContainer = 'children' in node && 'fills' in node && Array.isArray(node.fills) && node.fills.some((paint) => paint.visible !== false);
+    if (geometry.valid && (geometry.vectors > 0 || geometry.primitives > 1 || (named && geometry.primitives > 0))) {
+      if (named) return { isIcon: true, iconClassification: 'name-match' };
+      if (!paintedContainer && Math.min(node.width, node.height) >= 8 && Math.max(node.width, node.height) / Math.min(node.width, node.height) <= 4) {
+        return { isIcon: true, iconClassification: 'vector-shape' };
+      }
+    }
   }
   return { isIcon: false, iconClassification: 'not-detected' };
+}
+
+function isInsideKeyboard(node: BaseNode): boolean {
+  let current: BaseNode | null = node;
+  while (current) {
+    if (isKeyboardNodeName(current.name)) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function containsKeyboard(node: SceneNode): boolean {
+  return isKeyboardNodeName(node.name) || ('children' in node && node.children.some(containsKeyboard));
+}
+
+function inspectIconGeometry(root: SceneNode, includeHidden: boolean): { valid: boolean; vectors: number; primitives: number } {
+  const result = { valid: true, vectors: 0, primitives: 0 };
+  const visit = (node: SceneNode): void => {
+    if (!result.valid || (!includeHidden && node !== root && !node.visible)) return;
+    if (isKeyboardNodeName(node.name) || node.type === 'TEXT') { result.valid = false; return; }
+    for (const key of ['fills', 'strokes'] as const) {
+      const paints = key in node ? (node as unknown as Record<string, unknown>)[key] : undefined;
+      if (Array.isArray(paints) && paints.some((paint) => paint.visible !== false && (paint.type === 'IMAGE' || paint.type === 'VIDEO'))) {
+        result.valid = false;
+        return;
+      }
+    }
+    if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION') {
+      result.vectors++;
+      if (node.type === 'BOOLEAN_OPERATION') return;
+    } else if (['RECTANGLE', 'ELLIPSE', 'LINE', 'POLYGON', 'STAR'].includes(node.type)) result.primitives++;
+    else if (!['FRAME', 'GROUP', 'COMPONENT', 'INSTANCE'].includes(node.type)) { result.valid = false; return; }
+    if ('children' in node) node.children.forEach(visit);
+  };
+  visit(root);
+  return result;
 }
 
 function isKeyboardNodeName(name: string): boolean {
@@ -283,13 +371,16 @@ function isKeyboardNodeName(name: string): boolean {
   return /(^|[\s/_-])keyboard(?=$|[\s/_-])/.test(normalizedName);
 }
 
-function annotateExportedNodes(figmaJson: unknown, root: SceneNode, includeHidden: boolean): void {
+function annotateExportedNodes(figmaJson: unknown, root: SceneNode, includeHidden: boolean, iconAssets: ExportedAsset[] = [], warnings: ExportWarning[] = [], skippedRenders: SkippedRender[] = []): void {
+  const svgFiles = new Map(iconAssets.map((asset) => [asset.nodeId, `../assets/${asset.filename}`]));
+  const svgErrors = new Map(warnings.filter((warning) => warning.format === 'SVG').map((warning) => [warning.nodeId, warning.message]));
+  const svgSkips = new Map(skippedRenders.map((skip) => [skip.nodeId, skip.reason]));
   const classifications = new Map<string, IconClassification>();
   const collect = (node: SceneNode, ancestorsVisible: boolean, insideKeyboard: boolean): void => {
     const visible = ancestorsVisible && node.visible;
     if (!includeHidden && !visible) return;
     const keyboardSubtree = insideKeyboard || isKeyboardNodeName(node.name);
-    classifications.set(node.id, classifyIconNode(node, keyboardSubtree));
+    classifications.set(node.id, classifyIconNode(node, keyboardSubtree, includeHidden));
     if ('children' in node) node.children.forEach((child) => collect(child, visible, keyboardSubtree));
   };
   collect(root, true, false);
@@ -303,6 +394,12 @@ function annotateExportedNodes(figmaJson: unknown, root: SceneNode, includeHidde
     if (typeof value.id === 'string') {
       const classification = classifications.get(value.id);
       if (classification) Object.assign(value, classification);
+      const svgFile = svgFiles.get(value.id);
+      if (svgFile) value.svgAsset = svgFile;
+      const svgError = svgErrors.get(value.id);
+      if (svgError) value.svgExportError = svgError;
+      const svgSkip = svgSkips.get(value.id);
+      if (svgSkip) value.svgExportSkipped = svgSkip;
     }
     Object.values(value).forEach(annotate);
   };
@@ -314,7 +411,6 @@ type ExportedAsset = {
   filename: string;
   mimeType: string;
   base64: string;
-  overwrite?: boolean;
   imageHash?: string;
   nodeId?: string;
   nodeName?: string;
@@ -367,14 +463,27 @@ async function collectImageAssets(root: SceneNode, includeHidden: boolean, figma
   }));
 }
 
-async function collectIconSvgAssets(root: SceneNode, includeHidden: boolean): Promise<ExportedAsset[]> {
+async function collectIconSvgAssets(root: SceneNode, includeHidden: boolean, warnings: ExportWarning[], figmaJson: unknown, skippedRenders: SkippedRender[]): Promise<ExportedAsset[]> {
+  const notRendered = new Set<string>();
+  const inspectRenderBounds = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(inspectRenderBounds); return; }
+    if (!isRecord(value)) return;
+    if (typeof value.id === 'string' && value.absoluteRenderBounds === null) notRendered.add(value.id);
+    Object.values(value).forEach(inspectRenderBounds);
+  };
+  if (!includeHidden) inspectRenderBounds(figmaJson);
   const iconNodes: SceneNode[] = [];
   const visit = (node: SceneNode, ancestorsVisible: boolean, insideKeyboard: boolean): void => {
     const visible = ancestorsVisible && node.visible;
     if (!includeHidden && !visible) return;
-    const keyboardSubtree = insideKeyboard || isKeyboardNodeName(node.name);
+    const keyboardSubtree = insideKeyboard || isInsideKeyboard(node);
     if (keyboardSubtree) return;
-    if (classifyIconNode(node).isIcon) {
+    if (classifyIconNode(node, keyboardSubtree, includeHidden).isIcon) {
+      // A layer can be visible=true yet fully clipped by an ancestor frame.
+      if (!includeHidden && (notRendered.has(node.id) || ('absoluteRenderBounds' in node && node.absoluteRenderBounds === null))) {
+        skippedRenders.push({ format: 'SVG', nodeId: node.id, nodeName: node.name, reason: 'not-rendered' });
+        return;
+      }
       iconNodes.push(node);
       return;
     }
@@ -382,18 +491,31 @@ async function collectIconSvgAssets(root: SceneNode, includeHidden: boolean): Pr
   };
   visit(root, true, false);
 
-  return Promise.all(iconNodes.map(async (node) => {
-    const svg = await (node as SceneNode & ExportMixin).exportAsync({ format: 'SVG_STRING' });
-    return {
-      kind: 'icon',
-      nodeId: node.id,
-      nodeName: node.name,
-      filename: `icon-${slug(node.name)}-${slug(node.id)}.svg`,
-      mimeType: 'image/svg+xml',
-      base64: encodeUtf8Base64(svg),
-      overwrite: true,
-    };
+  const results = await Promise.all(iconNodes.map(async (node): Promise<ExportedAsset | null> => {
+    try {
+      const svg = await (node as SceneNode & ExportMixin).exportAsync({ format: 'SVG_STRING' });
+      return {
+        kind: 'icon',
+        nodeId: node.id,
+        nodeName: node.name,
+        filename: `icon-${slug(node.name)}-${slug(node.id)}-${svgContentHash(svg)}.svg`,
+        mimeType: 'image/svg+xml',
+        base64: encodeUtf8Base64(svg),
+      };
+    } catch (error) {
+      warnings.push({ format: 'SVG', nodeId: node.id, nodeName: node.name, message: String(error) });
+      return null;
+    }
   }));
+  return results.filter((asset): asset is ExportedAsset => asset !== null);
+}
+
+function svgContentHash(svg: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let index = 0; index < svg.length; index++) {
+    hash = BigInt.asUintN(64, (hash ^ BigInt(svg.charCodeAt(index))) * 0x100000001b3n);
+  }
+  return hash.toString(16).padStart(16, '0');
 }
 
 function encodeUtf8Base64(value: string): string {
@@ -479,7 +601,7 @@ type ExportedVariable = {
   error?: string;
 };
 
-async function resolveBoundVariables(root: SceneNode, figmaJson: unknown): Promise<ExportedVariable[]> {
+async function resolveDesignTokens(root: SceneNode, figmaJson: unknown) {
   const sceneNodes = new Map<string, SceneNode>();
   const visitSceneNode = (node: SceneNode): void => {
     sceneNodes.set(node.id, node);
@@ -488,10 +610,12 @@ async function resolveBoundVariables(root: SceneNode, figmaJson: unknown): Promi
   visitSceneNode(root);
 
   const bindings: VariableBinding[] = [];
+  const includedNodes = new Map<string, SceneNode>();
   const visitExportNode = (value: unknown): void => {
     if (!isRecord(value)) return;
     const consumer = typeof value.id === 'string' ? sceneNodes.get(value.id) : undefined;
     if (consumer) {
+      includedNodes.set(consumer.id, consumer);
       collectBindings(value, '$', consumer, bindings);
       if (Array.isArray(value.children)) value.children.forEach(visitExportNode);
       return;
@@ -503,6 +627,48 @@ async function resolveBoundVariables(root: SceneNode, figmaJson: unknown): Promi
   };
   visitExportNode(figmaJson);
 
+  const styleConsumers = new Map<string, Set<SceneNode>>();
+  const addStyle = (id: unknown, consumer: SceneNode): void => {
+    if (typeof id !== 'string' || !id) return;
+    if (!styleConsumers.has(id)) styleConsumers.set(id, new Set());
+    styleConsumers.get(id)!.add(consumer);
+  };
+  for (const consumer of includedNodes.values()) {
+    const properties: Record<string, unknown> = { boundVariables: consumer.boundVariables };
+    for (const key of ['fills', 'strokes', 'effects', 'layoutGrids'] as const) {
+      if (key in consumer) properties[key] = consumer[key as keyof SceneNode];
+    }
+    collectBindings(properties, '$', consumer, bindings);
+    for (const key of ['fillStyleId', 'strokeStyleId', 'textStyleId', 'effectStyleId', 'gridStyleId'] as const) {
+      if (key in consumer) addStyle((consumer as unknown as Record<string, unknown>)[key], consumer);
+    }
+    if (consumer.type === 'TEXT') {
+      const segments = consumer.getStyledTextSegments(['boundVariables', 'fills', 'textStyleId', 'fillStyleId']);
+      for (const segment of segments) {
+        collectBindings(segment as unknown as Record<string, unknown>, `$.text[${segment.start}:${segment.end}]`, consumer, bindings);
+        addStyle(segment.textStyleId, consumer);
+        addStyle(segment.fillStyleId, consumer);
+      }
+    }
+  }
+
+  const styles = await Promise.all([...styleConsumers].map(async ([id, consumers]) => {
+    const entry: Record<string, unknown> = { id, consumerNodeIds: [...consumers].map((node) => node.id) };
+    try {
+      const style = await figma.getStyleByIdAsync(id);
+      if (!style) throw new Error('Style could not be resolved in this file.');
+      // Read explicit properties: spreading a Figma host object can omit its getters.
+      for (const key of ['name', 'key', 'type', 'description', 'remote', 'paints', 'effects', 'layoutGrids',
+        'fontName', 'fontSize', 'lineHeight', 'letterSpacing', 'paragraphIndent', 'paragraphSpacing',
+        'textCase', 'textDecoration', 'listSpacing', 'leadingTrim', 'textWrapStyle',
+        'hangingPunctuation', 'hangingList', 'boundVariables']) {
+        if (key in style) entry[key] = (style as unknown as Record<string, unknown>)[key];
+      }
+      for (const consumer of consumers) collectBindings(entry, `$.styles[${id}]`, consumer, bindings);
+    } catch (error) { entry.error = String(error); }
+    return entry;
+  }));
+
   const variableCache = new Map<string, Promise<Variable | null>>();
   const getVariable = (id: string): Promise<Variable | null> => {
     let variable = variableCache.get(id);
@@ -512,8 +678,18 @@ async function resolveBoundVariables(root: SceneNode, figmaJson: unknown): Promi
     }
     return variable;
   };
+  const collectionCache = new Map<string, Promise<VariableCollection | null>>();
+  const getCollection = (id: string): Promise<VariableCollection | null> => {
+    let collection = collectionCache.get(id);
+    if (!collection) {
+      collection = figma.variables.getVariableCollectionByIdAsync(id);
+      collectionCache.set(id, collection);
+    }
+    return collection;
+  };
 
-  return Promise.all(bindings.map(async ({ id, bindingPath, consumer }) => {
+  const uniqueBindings = [...new Map(bindings.map((binding) => [`${binding.consumer.id}:${binding.id}:${binding.bindingPath}`, binding])).values()];
+  const variables = await Promise.all(uniqueBindings.map(async ({ id, bindingPath, consumer }) => {
     const entry: ExportedVariable = {
       id,
       name: null,
@@ -534,9 +710,9 @@ async function resolveBoundVariables(root: SceneNode, figmaJson: unknown): Promi
 
       entry.name = variable.name;
       entry.type = variable.resolvedType;
-      const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
+      const collection = await getCollection(variable.variableCollectionId);
       entry.collection = collection?.name ?? null;
-      const modeId = consumer.resolvedVariableModes[variable.variableCollectionId];
+      const modeId = consumer.resolvedVariableModes[variable.variableCollectionId] ?? collection?.defaultModeId;
       entry.mode = collection?.modes.find((mode) => mode.modeId === modeId)?.name ?? null;
 
       const resolved = variable.resolveForConsumer(consumer);
@@ -547,6 +723,33 @@ async function resolveBoundVariables(root: SceneNode, figmaJson: unknown): Promi
     }
     return entry;
   }));
+
+  const variableDefinitions: Record<string, unknown>[] = [];
+  const pending = [...new Set(uniqueBindings.map((binding) => binding.id))];
+  const visited = new Set<string>();
+  while (pending.length) {
+    const id = pending.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const entry: Record<string, unknown> = { id };
+    try {
+      const variable = await getVariable(id);
+      if (!variable) throw new Error('Variable definition could not be resolved in this file.');
+      const collection = await getCollection(variable.variableCollectionId);
+      Object.assign(entry, {
+        name: variable.name, key: variable.key, type: variable.resolvedType,
+        description: variable.description, remote: variable.remote, scopes: variable.scopes,
+        codeSyntax: variable.codeSyntax, collectionId: variable.variableCollectionId,
+        collection: collection ? { name: collection.name, modes: collection.modes, defaultModeId: collection.defaultModeId } : null,
+        valuesByMode: variable.valuesByMode,
+      });
+      for (const value of Object.values(variable.valuesByMode)) {
+        if (isRecord(value) && value.type === 'VARIABLE_ALIAS' && typeof value.id === 'string') pending.push(value.id);
+      }
+    } catch (error) { entry.error = String(error); }
+    variableDefinitions.push(entry);
+  }
+  return { variables, variableDefinitions, styles };
 }
 
 function collectBindings(value: Record<string, unknown>, path: string, consumer: SceneNode, bindings: VariableBinding[]): void {

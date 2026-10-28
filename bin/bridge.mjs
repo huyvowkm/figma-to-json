@@ -1,24 +1,33 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const [root, cache] = process.argv.slice(2);
+for (const folder of ['assets', 'exported']) mkdirSync(join(cache, folder), { recursive: true });
 const token = randomBytes(24).toString('hex');
 const preferredPort = Number(process.env.FIGMA_MCP_PORT ?? 3847);
 const send = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Figma-Mcp-Token' });
   res.end(JSON.stringify(body));
 };
-function writeUniqueJson(filename, payload) {
+function writeUniqueJson(filename, payload, preview) {
   const outputDir = join(cache, 'exported');
   const base = filename.slice(0, -'.json'.length);
   for (let suffix = 1; ; suffix += 1) {
     const candidate = suffix === 1 ? filename : `${base}-${suffix}.json`;
+    const previewName = `${candidate.slice(0, -5)}.png`;
+    let previewWritten = false;
     try {
-      writeFileSync(join(outputDir, candidate), JSON.stringify(payload, null, 2), { flag: 'wx' });
-      return candidate;
+      if (preview) {
+        writeFileSync(join(outputDir, previewName), preview, { flag: 'wx' });
+        previewWritten = true;
+      }
+      const savedPayload = preview ? { ...payload, preview: { file: previewName, mimeType: 'image/png' } } : payload;
+      writeFileSync(join(outputDir, candidate), JSON.stringify(savedPayload, null, 2), { flag: 'wx' });
+      return { saved: candidate, ...(preview ? { preview: previewName } : {}) };
     } catch (error) {
+      if (previewWritten) unlinkSync(join(outputDir, previewName));
       if (error?.code !== 'EEXIST') throw error;
     }
   }
@@ -35,10 +44,12 @@ function writeAssets(assets) {
     }
     const bytes = Buffer.from(asset.base64, 'base64');
     if (!bytes.length || bytes.toString('base64') !== asset.base64) throw new Error(`Invalid image data for ${asset.filename}`);
-    if (asset.overwrite === true) writeFileSync(join(outputDir, asset.filename), bytes);
-    else {
-      try { writeFileSync(join(outputDir, asset.filename), bytes, { flag: 'wx' }); }
-      catch (error) { if (error?.code !== 'EEXIST') throw error; }
+    try { writeFileSync(join(outputDir, asset.filename), bytes, { flag: 'wx' }); }
+    catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      if (!readFileSync(join(outputDir, asset.filename)).equals(bytes)) {
+        throw new Error(`Asset ${asset.filename} already exists with different content. Reopen the updated plugin and export again.`);
+      }
     }
     saved.push(asset.filename);
   }
@@ -50,13 +61,23 @@ const bridge = http.createServer((req, res) => {
   if (req.method !== 'POST' || req.url !== '/export' || req.headers['x-figma-mcp-token'] !== token) return send(res, 403, { error: 'Forbidden' });
   let raw = ''; req.on('data', (chunk) => raw += chunk); req.on('end', () => {
     try {
-      const { filename, payload, assets = [] } = JSON.parse(raw);
+      const { filename, payload, assets = [], preview } = JSON.parse(raw);
       if (!/^[a-z0-9-]+\.json$/i.test(filename)) throw new Error('Invalid filename');
+      let previewBytes;
+      if (preview !== undefined) {
+        if (!preview || typeof preview.base64 !== 'string') throw new Error('Invalid preview');
+        previewBytes = Buffer.from(preview.base64, 'base64');
+        if (previewBytes.toString('base64') !== preview.base64 || !previewBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('Invalid PNG preview');
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Preview requires an object payload');
+      }
       const savedAssets = writeAssets(assets);
-      const saved = writeUniqueJson(filename, payload);
-      send(res, 201, { saved, assets: savedAssets });
+      const saved = writeUniqueJson(filename, payload, previewBytes);
+      send(res, 201, { ...saved, assets: savedAssets });
     } catch (error) { send(res, 400, { error: String(error) }); }
   });
+});
+bridge.once('listening', () => {
+  console.log(`Figma bridge ready: http://localhost:${bridge.address().port}\nToken: ${token}\nExport folder: ${join(cache, 'exported')}`);
 });
 function listen(port) {
   bridge.once('error', async (error) => {
@@ -79,6 +100,6 @@ function listen(port) {
     }
     console.error(`Bridge failed: ${error.message}`); process.exit(1);
   });
-  bridge.listen(port, 'localhost', () => console.log(`Figma bridge ready: http://localhost:${port}\nToken: ${token}\nExport folder: ${join(cache, 'exported')}`));
+  bridge.listen(port, 'localhost');
 }
 listen(preferredPort);
