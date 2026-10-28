@@ -12,7 +12,7 @@ if (args.length && (args.length !== 2 || args[0] !== '--output-dir' || !args[1])
 
 const projectDir = args.length ? resolve(args[1]) : process.cwd();
 const cacheDir = join(projectDir, '.figma-cache');
-mkdirSync(join(cacheDir, 'exported'), { recursive: true });
+for (const folder of ['assets', 'exported']) mkdirSync(join(cacheDir, folder), { recursive: true });
 
 const slug = basename(projectDir).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40).replace(/-+$/g, '') || 'folder';
 const pathId = createHash('sha1').update(projectDir).digest('hex').slice(0, 8);
@@ -34,5 +34,5 @@ if (config?.transport?.env?.FIGMA_CACHE_ROOT !== cacheDir) {
   execFileSync('codex', serverArgs, { stdio: 'inherit' });
 }
 
-console.log(`Ready: ${server}\nExport folder: ${join(cacheDir, 'exported')}\nStarting localhost bridge. Press Ctrl+C to stop.`);
+console.log(`Ready: ${server}\nStarting localhost bridge. Press Ctrl+C to stop.`);
 execFileSync('node', [fileURLToPath(new URL('./bridge.mjs', import.meta.url)), projectDir, cacheDir], { stdio: 'inherit' });

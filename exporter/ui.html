@@ -56,6 +56,7 @@
       <div id="selection-summary" role="status" aria-live="polite">Checking selected items…</div>
       <div class="mode-field"><label for="export-mode">Export mode</label><select id="export-mode" aria-describedby="mode-help"><option value="visible-only">Visible only</option><option value="no-filter">No filter</option></select><p class="mode-help" id="mode-help"></p></div>
       <div class="mode-field"><label for="asset-mode">Export content</label><select id="asset-mode" aria-describedby="asset-mode-help"><option value="json-only">JSON only</option><option value="with-assets">JSON + assets</option></select><p class="mode-help" id="asset-mode-help">Exports JSON only; skips image and SVG extraction.</p></div>
+      <div class="mode-field"><label for="preview-mode">Frame preview</label><select id="preview-mode" aria-describedby="preview-help"><option value="none">None</option><option value="png">PNG preview</option></select><p class="mode-help" id="preview-help">Optional PNG saved beside its JSON. Large frames are scaled down. Hidden content follows Figma rendering, regardless of the JSON filter.</p></div>
       <div class="destination"><span>Destination</span><strong id="target">Choose an active folder above.</strong></div>
       <button id="export" aria-busy="false" disabled>Export selected</button>
       <div id="status" role="status" aria-live="polite"></div>
@@ -65,8 +66,8 @@
       <div class="main-header"><button id="settings-back">← Back</button><h3>Settings</h3></div>
       <p>Choose where the exported JSON goes. This choice is saved for next time.</p>
       <section class="mode-option">
-        <label><input type="radio" name="connection-mode" value="local-server" /><span><strong>Local server (MCP)</strong><small>Save JSON, images, and explicitly named SVG icons in any folder for your local Codex MCP tools.</small></span></label>
-        <div class="mode-guide"><strong>How to use</strong><ol><li>Open a terminal in the project folder you want to use, then run <code>node "/path/to/figma-mcp/bin/figma-mcp.mjs"</code>. It uses that current folder. You can instead pass <code>--output-dir "PATH_TO_FOLDER"</code>. Keep the command running.</li><li>Return to the exporter and select the folder that appears, or enter a manual connection.</li><li>Export. JSON files go into <code>.figma-cache/exported</code>; image fills and explicitly named icons go into <code>.figma-cache/assets</code>. Keyboard-named subtrees are excluded from SVG exports. JSON nodes show <code>name-match</code>, <code>excluded-keyboard</code>, or <code>not-detected</code>.</li></ol></div>
+        <label><input type="radio" name="connection-mode" value="local-server" /><span><strong>Local server (MCP)</strong><small>Save JSON, images, and detected SVG icons in any folder for your local Codex MCP tools.</small></span></label>
+        <div class="mode-guide"><strong>How to use</strong><ol><li>Open a terminal in the project folder you want to use, then run <code>node "/path/to/figma-mcp/bin/figma-mcp.mjs"</code>. It uses that current folder. You can instead pass <code>--output-dir "PATH_TO_FOLDER"</code>. Keep the command running.</li><li>Return to the exporter and select the folder that appears, or enter a manual connection.</li><li>Export. JSON files go into <code>.figma-cache/exported</code>; images and SVG icons go into <code>.figma-cache/assets</code> when JSON + assets is selected. SVG detection uses names, small vector shapes, and Figma SVG export settings. Keyboard subtrees are excluded. For a missed icon, add an SVG export setting in Figma and export again.</li></ol></div>
       </section>
       <section class="mode-option">
         <label><input type="radio" name="connection-mode" value="download" /><span><strong>Download JSON</strong><small>Export files from Figma without starting a local server.</small></span></label>
@@ -169,6 +170,14 @@
         for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
         renderDownloadFile(filename, bytes, mimeType);
       };
+      const warningSummary = (warnings) => {
+        if (!Array.isArray(warnings) || !warnings.length) return '';
+        const lines = warnings.slice(0, 5).map((warning) => `${warning.format}: ${warning.nodeName} (${warning.nodeId}) — ${warning.message}`);
+        const more = warnings.length > 5 ? '\nMore details are recorded in each JSON file.' : '';
+        return `\n${warnings.length} optional render(s) skipped:\n${lines.join('\n')}${more}`;
+      };
+      const skippedRenderSummary = (skipped) => Array.isArray(skipped) && skipped.length
+        ? `\n${skipped.length} SVG(s) omitted because Figma reports no rendered area (for example, clipped content). Details are recorded in JSON.` : '';
       const renderModeHelp = () => {
         document.getElementById('mode-help').textContent = document.getElementById('export-mode').value === 'visible-only'
           ? 'Omits exported content marked hidden.'
@@ -249,7 +258,7 @@
       document.getElementById('export-mode').onchange = () => { renderModeHelp(); renderSelectionSummary(); };
       document.getElementById('asset-mode').onchange = () => {
         document.getElementById('asset-mode-help').textContent = document.getElementById('asset-mode').value === 'with-assets'
-          ? 'Includes image files and detected SVG icons.'
+          ? 'Includes images and SVG icons detected by name, vector shape, or Figma SVG export settings. Keyboard icons are excluded.'
           : 'Exports JSON only; skips image and SVG extraction.';
       };
       document.getElementById('refresh').onclick = scan;
@@ -268,6 +277,7 @@
           connectionMode,
           exportMode: document.getElementById('export-mode').value,
           includeAssets: document.getElementById('asset-mode').value === 'with-assets',
+          includePreview: document.getElementById('preview-mode').value === 'png',
         };
         if (connectionMode === 'local-server') {
           pluginMessage.bridge = active.url;
@@ -299,7 +309,8 @@
           setExporting(false);
           const assetCount = Math.max(0, Number(message.assetCount) || 0);
           const assetSummary = assetCount ? ` and ${assetCount} asset file(s)` : '';
-          status.textContent = `${message.count} JSON file(s)${assetSummary} ready. Click each download link below.`;
+          const previewSummary = message.previewCount ? ` and ${message.previewCount} PNG preview(s)` : '';
+          status.textContent = `${message.count} JSON file(s)${assetSummary}${previewSummary} ready. Click each download link below.${skippedRenderSummary(message.skippedRenders)}${warningSummary(message.warnings)}`;
           exportingTo = '';
         }
         if (message.type === 'export-complete') {
@@ -309,8 +320,11 @@
             ? ' Assets were skipped.'
             : message.assets?.length
               ? ` Saved ${message.assets.length} asset file(s) to assets/.`
-              : ' No image or icon assets were detected; vector geometry remains in the JSON.';
-          status.textContent = `Exported ${message.count} item(s) to ${exportingTo}.${assetSummary}`;
+              : message.warnings?.some((warning) => warning.format === 'SVG')
+                ? ' No SVG files were saved; see render warnings below.'
+                : message.skippedRenders?.length ? ' No assets were saved; non-rendered SVG candidates were omitted.'
+                  : ' No image or icon assets were detected; vector geometry remains in the JSON.';
+          status.textContent = `Exported ${message.count} item(s) to ${exportingTo}.${assetSummary}${skippedRenderSummary(message.skippedRenders)}${warningSummary(message.warnings)}`;
           exportingTo = '';
         }
         if (message.type === 'export-error') {

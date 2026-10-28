@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,6 @@ if (!manifest.networkAccess.allowedDomains.every((domain) => domain.endsWith('/'
 }
 const ui = readFileSync(join(toolRoot, 'exporter', 'ui.html'), 'utf8');
 if (ui.includes('localStorage')) throw new Error('Plugin UI must not depend on browser localStorage.');
-mkdirSync(join(cache, 'exported'), { recursive: true });
 const child = spawn('node', [new URL('../bin/bridge.mjs', import.meta.url).pathname, root, cache], { env: { ...process.env, FIGMA_MCP_PORT: String(port) } });
 let output = '';
 child.stdout.on('data', (chunk) => output += chunk);
@@ -36,6 +35,9 @@ try {
     });
   });
   const token = output.match(/Token: ([a-f0-9]+)/)?.[1];
+  for (const folder of ['assets', 'exported']) {
+    if (!statSync(join(cache, folder)).isDirectory()) throw new Error(`Startup did not create ${folder}.`);
+  }
   if (!token) throw new Error('Bridge did not print a token.');
   const health = await fetch(`http://localhost:${port}/health`).then((response) => response.json());
   if (health.project !== root) throw new Error('Health endpoint returned the wrong project.');
@@ -57,7 +59,35 @@ try {
   const saved = await fetch(`${manualConnection.url}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': manualConnection.token }, body: JSON.stringify({ filename: 'test.json', payload: { ok: true } }) });
   if (saved.status !== 201) throw new Error(`Export endpoint failed: ${await saved.text()}`);
   if (JSON.parse(readFileSync(join(cache, 'exported', 'test.json'), 'utf8')).ok !== true) throw new Error('Export file content was incorrect.');
-  console.log('Plugin active-project, manual connection, bridge health, authentication, and export test passed.');
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=';
+  const exportPreview = (base64 = png) => fetch(`${manualConnection.url}/export`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+    body: JSON.stringify({ filename: 'test.json', payload: { ok: true, preview: { file: 'old-name.png' } }, preview: { base64 } }),
+  });
+  const second = await exportPreview().then((response) => response.json());
+  if (second.saved !== 'test-2.json' || second.preview !== 'test-2.png') throw new Error('JSON and PNG suffixes did not match.');
+  const secondPayload = JSON.parse(readFileSync(join(cache, 'exported', second.saved), 'utf8'));
+  if (secondPayload.preview.file !== second.preview) throw new Error('Saved JSON did not reference its numbered PNG.');
+  const third = await exportPreview().then((response) => response.json());
+  if (third.saved !== 'test-3.json' || third.preview !== 'test-3.png') throw new Error('Repeated preview export overwrote files.');
+  if (readFileSync(join(cache, 'exported', second.preview)).toString('base64') !== png) throw new Error('Saved preview bytes changed.');
+  writeFileSync(join(cache, 'exported', 'test-4.png'), 'keep this orphan');
+  const orphan = await exportPreview().then((response) => response.json());
+  if (orphan.saved !== 'test-5.json' || readFileSync(join(cache, 'exported', 'test-4.png'), 'utf8') !== 'keep this orphan') throw new Error('Existing orphan PNG was overwritten.');
+  if ((await exportPreview(Buffer.from('not PNG').toString('base64'))).status !== 400) throw new Error('Invalid PNG was accepted.');
+  const saveIcon = (content, filename = 'icon-search-1-aabbcc.svg', overwrite = false) => fetch(`${manualConnection.url}/export`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+    body: JSON.stringify({ filename: 'icons.json', payload: { assets: [{ file: `../assets/${filename}` }] },
+      assets: [{ filename, base64: Buffer.from(content).toString('base64'), overwrite }] }),
+  });
+  if ((await saveIcon('<svg>old</svg>')).status !== 201) throw new Error('SVG export failed.');
+  if ((await saveIcon('<svg>old</svg>')).status !== 201) throw new Error('Identical SVG was not reused.');
+  if ((await saveIcon('<svg>changed</svg>', 'icon-search-1-aabbcc.svg', true)).status !== 400) throw new Error('Existing SVG could be overwritten.');
+  if (readFileSync(join(cache, 'assets', 'icon-search-1-aabbcc.svg'), 'utf8') !== '<svg>old</svg>') throw new Error('Previous SVG content changed.');
+  if ((await saveIcon('<svg>changed</svg>', 'icon-search-1-ddeeff.svg')).status !== 201) throw new Error('New SVG revision could not be saved.');
+  const iconPayload = JSON.parse(readFileSync(join(cache, 'exported', 'icons-3.json'), 'utf8'));
+  if (iconPayload.assets[0].file !== '../assets/icon-search-1-ddeeff.svg') throw new Error('SVG revision reference was incorrect.');
+  console.log('Bridge discovery, authentication, PNG pairs, asset reuse, immutable SVG revisions, and collision checks passed.');
 } finally {
   child.kill();
   rmSync(root, { recursive: true, force: true });
