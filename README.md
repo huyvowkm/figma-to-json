@@ -1,6 +1,8 @@
 # Figma to JSON
 
-A local Figma exporter for selected frames and components. Save each selection as a separate JSON file, optionally include raster image paints and SVG icons, and read folder exports through Codex MCP tools.
+A Figma plugin that exports selected frames and components as JSON, with optional raster images, SVG icons, and PNG previews. Exporting uses Figma's plugin APIs and requires no AI model, AI API key, or Codex installation.
+
+Use **Download JSON** for standalone exports inside Figma. An optional local helper saves exports directly into a project folder and connects them to Codex through MCP.
 
 I built this after running into rate limits while requesting Figma design data through MCP. I wanted a way to export selected designs as JSON once and keep the data locally. Figma to JSON makes those files available through a local MCP server, reducing repeat requests for designs that have already been exported.
 
@@ -22,29 +24,37 @@ I built this after running into rate limits while requesting Figma design data t
 
 ## Requirements
 
-- Git and Node.js 22 or later with npm (use a currently supported release).
-- Figma desktop to import and run the development plugin.
-- Codex CLI for **Local server (MCP)** mode. **Download JSON** mode does not require Codex or the local helper.
+| Workflow | Requirements |
+| --- | --- |
+| **Standalone Figma plugin — Download JSON** | Figma desktop. Git and Node.js 22 or later with npm for the clone/build steps below. No Codex or local server. |
+| **Optional local helper — Local server (MCP)** | Node.js 22 or later, the built MCP server, and Codex CLI available as `codex` on your terminal's `PATH`. The interactive monitor also needs the root npm dependencies. |
+
+The Codex dependency comes from the current `bin/figma-mcp.mjs` launcher: it calls Codex CLI to register the project's MCP server, configure local read-tool permissions, and remove the registration on shutdown. Its status, monitor, stop, and clean commands also read Codex configuration. This is a dependency of that integration; the Figma export itself uses no AI. Choose **Download JSON** if you only need exported files.
 
 ## Clone and build
+
+### Standalone Figma plugin
 
 ```sh
 git clone git@github.com:huyvowkm/figma-to-json.git
 cd figma-to-json
-npm ci
-
-cd server
-npm ci
-npm run build
-
-cd ../exporter
-npm ci
-npm run build
-
-cd ..
+npm ci --prefix exporter
+npm run build --prefix exporter
 ```
 
-The root npm project contains the Ink + React terminal monitor. The server and Figma plugin have separate npm projects, so install dependencies in each directory as shown. The monitor runs as plain JavaScript and does not need a JSX build step.
+You can now import the plugin and use **Download JSON**. The root and `server/` npm projects are unnecessary for this workflow.
+
+### Optional local helper and Codex MCP integration
+
+For **Local server (MCP)** mode, also run these commands from the repository root:
+
+```sh
+npm ci --prefix server
+npm run build --prefix server
+npm ci
+```
+
+The server and Figma plugin have separate npm projects. The root npm project contains the Ink + React terminal monitor; its dependencies are only needed for the interactive monitor. The monitor runs as plain JavaScript and does not need a JSX build step. Install Codex CLI before starting the launcher.
 
 ## Import the Figma plugin
 
@@ -57,7 +67,7 @@ This is a local development plugin imported from its manifest. Each computer tha
 
 ## Export without a local server
 
-Use this option if you only need files downloaded from Figma.
+Use this option for standalone exports. JSON, images, SVG icons, PNG previews, and referenced variable/style data are prepared by the Figma plugin without Codex or an AI service.
 
 1. Open **Settings** in the exporter and choose **Download JSON**.
 2. Select one or more frames, components, component sets, or instances on the canvas.
@@ -66,11 +76,11 @@ Use this option if you only need files downloaded from Figma.
 
 Figma downloads each selected item as its own JSON file. If you choose **JSON + assets**, asset files download separately. To keep their relative links working, place the JSON files in an `exported/` folder and the downloaded assets in a sibling `assets/` folder.
 
-## Save exports to a local folder and use Codex MCP
+## Optional: save exports to a local folder and use Codex MCP
 
 ### Build the server
 
-Follow the build steps above. The launcher registers a local stdio MCP server with Codex for the selected project folder, so Codex CLI must be installed and available as `codex` in your terminal.
+Follow the optional local helper build steps above. This workflow uses the Codex-specific launcher to register a local stdio MCP server for the selected project folder, so Codex CLI must be installed and available as `codex` in your terminal. The launcher and export bridge do not invoke an AI model; using Codex to interpret the exported designs is a separate step.
 
 ### Start the helper in the folder you want to use
 
@@ -215,7 +225,7 @@ Each JSON file contains export metadata, the source Figma node information, reso
 
 `variables` records bindings and their resolved values for each consumer node, including styled text ranges. `variableDefinitions` records referenced variables, mode values, collection modes, and transitive alias dependencies. `styles` records referenced text, paint, effect, and grid styles with consumer node IDs. Missing or inaccessible variables/styles have an `error` field; these are partial results, not proof that the design has no tokens. This exports data referenced by the filtered selection, not an entire team library. Alias dependencies can include values from other modes.
 
-## Codex MCP tools
+## Optional Codex MCP tools
 
 The local MCP server exposes these read-only tools for JSON files in `.figma-cache/exported/` inside the selected project folder:
 
