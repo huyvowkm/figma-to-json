@@ -58,7 +58,7 @@ figma.ui.onmessage = async (message) => {
             }
             catch (error) {
                 if (port === 3847)
-                    errors.push(String(error));
+                    errors.push(errorMessage(error));
                 return null;
             }
         }))).filter(Boolean);
@@ -102,7 +102,7 @@ figma.ui.onmessage = async (message) => {
                 exportedJson = await node.exportAsync({ format: 'JSON_REST_V1' });
             }
             catch (error) {
-                throw new Error(`JSON export failed for "${node.name}" (${node.id}): ${String(error)}`);
+                throw new Error(`JSON export failed for "${node.name}" (${node.id}): ${errorMessage(error)}`);
             }
             const figmaJson = exportMode === 'visible-only'
                 ? removeInvisibleNodes(exportedJson)
@@ -128,7 +128,7 @@ figma.ui.onmessage = async (message) => {
                         })) };
                 }
                 catch (error) {
-                    warnings.push({ format: 'PNG', nodeId: node.id, nodeName: node.name, message: String(error) });
+                    warnings.push({ format: 'PNG', nodeId: node.id, nodeName: node.name, message: errorMessage(error) });
                 }
             }
             annotateExportedNodes(figmaJson, node, includeHidden, iconAssets, warnings, skippedRenders);
@@ -200,15 +200,9 @@ figma.ui.onmessage = async (message) => {
         const bridgeUrl = message.bridge;
         const bridgeToken = message.token;
         for (const entry of exports) {
-            const response = await fetch(`${bridgeUrl}/export`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': bridgeToken },
-                body: JSON.stringify({ filename: entry.filename, payload: entry.payload, assets: entry.assets, preview: entry.preview }),
-            });
-            if (!response.ok)
-                throw new Error(await response.text());
-            const result = await response.json();
+            const result = await sendToBridge(bridgeUrl, bridgeToken, JSON.stringify({ filename: entry.filename, payload: entry.payload, assets: entry.assets, preview: entry.preview }));
             if (!isRecord(result) || typeof result.saved !== 'string') {
-                throw new Error('The local bridge did not return the saved filename.');
+                throw new Error(`Server ${bridgeUrl} did not confirm a saved filename. Check the helper terminal and export folder before retrying.`);
             }
             savedFiles.push(result.saved);
             if (typeof result.preview === 'string')
@@ -223,9 +217,66 @@ figma.ui.onmessage = async (message) => {
         figma.ui.postMessage({ type: 'export-complete', count: exports.length, files: savedFiles, assets: [...savedAssets], warnings, skippedRenders, includeAssets, connectionMode });
     }
     catch (error) {
-        figma.ui.postMessage({ type: 'export-error', error: String(error), files: savedFiles, assets: [...savedAssets], includeAssets, connectionMode });
+        figma.ui.postMessage({ type: 'export-error', error: errorMessage(error), files: savedFiles, assets: [...savedAssets], includeAssets, connectionMode });
     }
 };
+function errorMessage(error) {
+    if (typeof error === 'string' && error.trim())
+        return error;
+    if (isRecord(error)) {
+        for (const key of ['message', 'error', 'reason', 'description']) {
+            if (typeof error[key] === 'string' && error[key].trim())
+                return error[key];
+        }
+        const details = ['name', 'code', 'status'].map((key) => error[key])
+            .filter((value) => typeof value === 'string' || typeof value === 'number');
+        if (details.length)
+            return details.join(': ');
+    }
+    return 'No error details were provided.';
+}
+async function sendToBridge(url, token, body) {
+    let timer;
+    try {
+        return await Promise.race([
+            (async () => {
+                let response;
+                try {
+                    response = await fetch(`${url}/export`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token }, body,
+                    });
+                }
+                catch (error) {
+                    throw new Error(`Cannot reach the local server at ${url}. It may have stopped or the connection may be blocked. Start the helper in your target folder, click Refresh, and select the server again. Details: ${errorMessage(error)}`);
+                }
+                if (!response.ok) {
+                    if (response.status === 403)
+                        throw new Error(`Server ${url} rejected the connection token (HTTP 403). If the helper was restarted, click Refresh and select the server again, or update the manual token.`);
+                    const text = await response.text();
+                    let detail = text;
+                    try {
+                        detail = errorMessage(JSON.parse(text));
+                    }
+                    catch { }
+                    throw new Error(`Server ${url} could not save the export (HTTP ${response.status}). ${detail || 'Check the helper terminal for details.'}`);
+                }
+                try {
+                    return await response.json();
+                }
+                catch {
+                    throw new Error(`Server ${url} returned an invalid response. Check the helper terminal and export folder before retrying.`);
+                }
+            })(),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`Server ${url} did not respond within 15 seconds. Check the helper terminal. Files may already have been saved; check the export folder before retrying.`)), 15000);
+            }),
+        ]);
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
+}
 function removeInvisibleNodes(value) {
     if (Array.isArray(value)) {
         return value.flatMap((child) => isInvisible(child) ? [] : [removeInvisibleNodes(child)]);
@@ -489,28 +540,23 @@ async function collectIconSvgAssets(root, includeHidden, warnings, figmaJson, sk
     const results = await Promise.all(iconNodes.map(async (node) => {
         try {
             const svg = await node.exportAsync({ format: 'SVG_STRING' });
+            const base64 = encodeUtf8Base64(svg);
+            const filename = `icon-${slug(node.name).replace(/^icons?(?:-|$)/, '') || 'asset'}.svg`;
             return {
                 kind: 'icon',
                 nodeId: node.id,
                 nodeName: node.name,
-                filename: `icon-${slug(node.name)}-${slug(node.id)}-${svgContentHash(svg)}.svg`,
+                filename,
                 mimeType: 'image/svg+xml',
-                base64: encodeUtf8Base64(svg),
+                base64,
             };
         }
         catch (error) {
-            warnings.push({ format: 'SVG', nodeId: node.id, nodeName: node.name, message: String(error) });
+            warnings.push({ format: 'SVG', nodeId: node.id, nodeName: node.name, message: errorMessage(error) });
             return null;
         }
     }));
     return results.filter((asset) => asset !== null);
-}
-function svgContentHash(svg) {
-    let hash = 0xcbf29ce484222325n;
-    for (let index = 0; index < svg.length; index++) {
-        hash = BigInt.asUintN(64, (hash ^ BigInt(svg.charCodeAt(index))) * 0x100000001b3n);
-    }
-    return hash.toString(16).padStart(16, '0');
 }
 function encodeUtf8Base64(value) {
     const encoded = encodeURIComponent(value);
@@ -648,7 +694,7 @@ async function resolveDesignTokens(root, figmaJson) {
                 collectBindings(entry, `$.styles[${id}]`, consumer, bindings);
         }
         catch (error) {
-            entry.error = String(error);
+            entry.error = errorMessage(error);
         }
         return entry;
     }));
@@ -701,7 +747,7 @@ async function resolveDesignTokens(root, figmaJson) {
                 entry.hex = colorToHex(resolved.value);
         }
         catch (error) {
-            entry.error = String(error);
+            entry.error = errorMessage(error);
         }
         return entry;
     }));
@@ -732,7 +778,7 @@ async function resolveDesignTokens(root, figmaJson) {
             }
         }
         catch (error) {
-            entry.error = String(error);
+            entry.error = errorMessage(error);
         }
         variableDefinitions.push(entry);
     }

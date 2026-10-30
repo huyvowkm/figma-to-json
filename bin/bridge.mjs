@@ -1,11 +1,23 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { removeRegistration } from './registration.mjs';
+
+let registration;
+process.on('message', (message) => {
+  if (message.type === 'registration') registration = message;
+});
+process.once('disconnect', () => {
+  if (registration) removeRegistration(registration.server, registration.transport);
+  process.exit(process.exitCode ?? 0);
+});
 
 const [root, cache] = process.argv.slice(2);
 for (const folder of ['assets', 'exported']) mkdirSync(join(cache, folder), { recursive: true });
 const token = randomBytes(24).toString('hex');
+const instanceId = randomBytes(16).toString('hex');
+const startedAt = new Date().toISOString();
 const preferredPort = Number(process.env.FIGMA_MCP_PORT ?? 3847);
 const send = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Figma-Mcp-Token' });
@@ -34,7 +46,6 @@ function writeUniqueJson(filename, payload, preview) {
 }
 function writeAssets(assets) {
   if (!Array.isArray(assets)) throw new Error('Invalid assets payload');
-  if (!assets.length) return [];
   const outputDir = join(cache, 'assets');
   mkdirSync(outputDir, { recursive: true });
   const saved = [];
@@ -44,20 +55,27 @@ function writeAssets(assets) {
     }
     const bytes = Buffer.from(asset.base64, 'base64');
     if (!bytes.length || bytes.toString('base64') !== asset.base64) throw new Error(`Invalid image data for ${asset.filename}`);
-    try { writeFileSync(join(outputDir, asset.filename), bytes, { flag: 'wx' }); }
-    catch (error) {
-      if (error?.code !== 'EEXIST') throw error;
-      if (!readFileSync(join(outputDir, asset.filename)).equals(bytes)) {
-        throw new Error(`Asset ${asset.filename} already exists with different content. Reopen the updated plugin and export again.`);
-      }
-    }
+    writeFileSync(join(outputDir, asset.filename), bytes);
     saved.push(asset.filename);
   }
   return saved;
 }
 const bridge = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
-  if (req.method === 'GET' && req.url === '/health') return send(res, 200, { project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port, token });
+  if (req.method === 'GET' && req.url === '/health') return send(res, 200, {
+    project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port, token,
+    instanceId, startedAt, pid: process.pid, launcherPid: process.ppid,
+    server: registration?.server, supportsShutdown: true,
+  });
+  if (req.method === 'POST' && req.url === '/shutdown') {
+    if (req.headers['x-figma-mcp-token'] !== token) return send(res, 403, { error: 'Forbidden' });
+    res.once('finish', () => setImmediate(() => {
+      bridge.close(() => process.exit(0));
+      bridge.closeIdleConnections();
+    }));
+    send(res, 200, { stopping: true });
+    return;
+  }
   if (req.method !== 'POST' || req.url !== '/export' || req.headers['x-figma-mcp-token'] !== token) return send(res, 403, { error: 'Forbidden' });
   let raw = ''; req.on('data', (chunk) => raw += chunk); req.on('end', () => {
     try {
@@ -77,6 +95,7 @@ const bridge = http.createServer((req, res) => {
   });
 });
 bridge.once('listening', () => {
+  process.send?.({ type: 'ready', port: bridge.address().port, pid: process.pid, instanceId, startedAt });
   console.log(`Figma bridge ready: http://localhost:${bridge.address().port}\nToken: ${token}\nExport folder: ${join(cache, 'exported')}`);
 });
 function listen(port) {

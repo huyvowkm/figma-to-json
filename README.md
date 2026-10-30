@@ -15,10 +15,14 @@ I built this after running into rate limits while requesting Figma design data t
 - Use **Download JSON** without running a local helper, or **Local server (MCP)** to save into a folder and make JSON available to Codex.
 - Detect dark mode from the selected node's name, variant values, or active variable mode names. When detected, add `-dark` to the JSON filename.
 - Avoid overwriting JSON files by adding a numeric suffix when a filename already exists.
+- Monitor local bridges in a live terminal table, inspect status as JSON, stop a selected server, and clean confirmed stale registrations.
+- Automatically approve the seven local read tools on startup and remove the matching Codex registration when the helper stops.
+- Export readable SVG filenames such as `icon-search.svg`. Same-name assets use the latest content; frame JSON and PNG previews keep numbered filenames.
+- Get actionable connection and token errors, a 15-second upload timeout, and a list of files saved before a failure.
 
 ## Requirements
 
-- Git and a currently supported Node.js LTS release with npm.
+- Git and Node.js 22 or later with npm (use a currently supported release).
 - Figma desktop to import and run the development plugin.
 - Codex CLI for **Local server (MCP)** mode. **Download JSON** mode does not require Codex or the local helper.
 
@@ -27,6 +31,7 @@ I built this after running into rate limits while requesting Figma design data t
 ```sh
 git clone git@github.com:huyvowkm/figma-to-json.git
 cd figma-to-json
+npm ci
 
 cd server
 npm ci
@@ -39,7 +44,7 @@ npm run build
 cd ..
 ```
 
-The server and Figma plugin have separate npm projects, so install dependencies in each directory. There is no root-level `npm install` step.
+The root npm project contains the Ink + React terminal monitor. The server and Figma plugin have separate npm projects, so install dependencies in each directory as shown. The monitor runs as plain JavaScript and does not need a JSX build step.
 
 ## Import the Figma plugin
 
@@ -89,7 +94,13 @@ Set-Location "$HOME\Documents\figma-exports"
 node "C:\path\to\figma-to-json\bin\figma-mcp.mjs"
 ```
 
-The launcher creates `.figma-cache/` with both `assets/` and `exported/` inside the selected project folder at startup, registers the folder's MCP server with Codex, and starts the local bridge. Existing folders and files are preserved. Leave this terminal running while exporting. Press **Ctrl+C** to stop the bridge. Running it again for the same project reuses the active bridge instead of starting a duplicate.
+The launcher creates `.figma-cache/` with both `assets/` and `exported/` inside the selected project folder at startup, starts the local bridge, and registers the folder's MCP server with Codex once the bridge is listening. Existing folders and files are preserved. Leave this terminal running while exporting. Press **Ctrl+C** to stop the bridge and remove its matching Codex registration. Closing the terminal tab (when the terminal sends `SIGHUP`), `SIGTERM`, or a bridge exit also triggers cleanup. Running it again for the same project reuses the active bridge instead of starting a duplicate; the duplicate launcher leaves the active registration alone.
+
+The launcher also watches for terminal input disconnects and the loss of its parent shell, covering terminal closure without a shutdown signal. The bridge exits when its launcher connection disappears and performs guarded registration cleanup if the launcher could not. This prevents an orphaned bridge from blocking the next start.
+
+Cleanup preserves registrations changed externally while the helper is running. Force-killing both processes, a power loss, or a failed Codex command can still leave an entry behind; check `codex mcp list` and use `codex mcp remove <server-name>` if needed. Removing a registration preserves all exports. An already-open Codex session may retain loaded tools until restarted. Start the helper again before starting a new Codex session that needs its tools.
+
+The launcher also configures `approval_mode = "approve"` for this server's seven local read tools: `list_screens`, `get_screen`, `get_metadata`, `get_node`, `get_preview`, `get_variables`, and `search_nodes`. These permissions are saved under the server's `tools` entries in Codex's config and removed with its registration on shutdown. Other servers and global approval settings are preserved. Restart an existing Codex session to load the new tool permissions. This requires a Codex CLI version supporting `config/batchWrite` and MCP per-tool approval settings.
 
 The bridge listens on `localhost`, starting at port `3847` and trying through `3867` if a port is already in use. The terminal prints the active URL and a temporary connection token. Keep the token private; the plugin uses it to send exports to the running local bridge.
 
@@ -101,6 +112,46 @@ The bridge listens on `localhost`, starting at port `3847` and trying through `3
 4. Select Figma nodes, choose the export options, and click **Export selected**.
 
 The launcher configures Codex to read JSON files from this folder. Use `codex mcp list` to check the registered MCP servers. Keep the repository at a stable path after setup because Codex stores the launch command for the local server.
+
+### Monitor and stop servers
+
+Run `npm ci` once in the repository root to install Ink and React. Existing checkouts that previously installed only `server/` and `exporter/` also need this step. The root dependencies are loaded only when opening the interactive monitor; server startup and non-interactive management commands keep their existing behavior.
+
+From the repository root, use these commands. Starting the helper without `--output-dir` uses your current directory as the project folder.
+
+```sh
+node bin/figma-mcp.mjs --output-dir /path/to/project
+node bin/figma-mcp.mjs status          # Discovered and tracked local bridges
+node bin/figma-mcp.mjs status --json   # Machine-readable status, without tokens
+node bin/figma-mcp.mjs monitor         # Live terminal monitor
+node bin/figma-mcp.mjs stop <name>     # Stop a bridge and wait for cleanup
+node bin/figma-mcp.mjs clean           # Remove confirmed stopped entries
+```
+
+From another folder, use the absolute path to `bin/figma-mcp.mjs`. If you already have a `run figma-mcp` shortcut pointing to that file and forwarding arguments, it supports the same commands. Monitor commands do not start an export bridge.
+
+The monitor refreshes every two seconds. Selection stays on the same server across refreshes, and long lists scroll with the selection.
+
+| Key | Action |
+| --- | --- |
+| **↑ / ↓** | Select a server. |
+| **S** | Stop the selected verified running bridge immediately. |
+| **R** | Refresh now. |
+| **c** | Clean the selected confirmed stopped row. |
+| **Shift+C** | Clean all confirmed stale rows. |
+| **Q**, **Esc**, **Ctrl+C** | Exit the monitor, keeping bridges running. |
+
+Actions run directly on the keypress. Stop, refresh and quit accept uppercase or lowercase; cleanup distinguishes **c** from **Shift+C**. Cleanup preserves running, unresponsive and untracked entries.
+
+The monitor uses Ink + React components for layout and keyboard input. When the terminal is wide enough for the current data, the main table includes full server name, folder, state, port, config, PID, tools, exports, and last export as columns. Otherwise, it uses a compact server list with a bordered **Selected server** details table underneath. Long selected values wrap when height allows; overflow is marked with an ellipsis. The layout updates when you resize the terminal and keeps the selected server. Ink restores the cursor, screen, and terminal input mode when you exit. It requires an interactive terminal; `status` still works in scripts.
+
+Background refreshes leave the status line quiet and preserve the latest action result. Stop/clean feedback appears when you press the action key; pressing **R** shows manual refresh progress. Selecting an unavailable action shows its explanation only after you try it.
+
+States distinguish a healthy `running` bridge, a confirmed `stopped` bridge, an `unresponsive` tracked instance, and an `untracked` registration without enough process information. A registered Codex reader and a running export bridge are separate: these commands report bridge health and configuration, not which tools an already-open Codex session has loaded.
+
+New launcher runs store private per-server records in `$CODEX_HOME/figma-mcp/servers/` (default `~/.codex/figma-mcp/servers/`). Records contain project paths, instance identity, start time, port and PIDs; they do not contain connection tokens. Stopped records remain available for status until `clean` removes them. `FIGMA_MCP_STATE_DIR` overrides the records directory. The monitor discovers bridges on ports 3847–3867 and uses recorded ports for custom-port launches. `FIGMA_MCP_PORT` can also specify a port to discover.
+
+Stop uses the bridge's authenticated localhost shutdown endpoint and checks its project and instance identity; it does not kill a process by PID. Older bridges without this endpoint must be stopped in their original terminal and restarted with the updated launcher. Clean only removes matching tracked registrations with a closed port and absent bridge/launcher processes. It preserves running, unresponsive, untracked, or externally changed registrations and all design exports. Other MCP servers are excluded.
 
 ## Export options
 
@@ -130,7 +181,7 @@ Keyboard-named subtrees are always excluded from SVG extraction, even when selec
 
 JSON nodes include `isIcon` and `iconClassification`: `name-match`, `vector-shape`, `svg-export-setting`, `excluded-keyboard`, or `not-detected`. Nodes actually exported as SVG also include `svgAsset`, a relative path to their file. With **JSON only**, classification is still included but SVG files and links are not created.
 
-SVG filenames include a fingerprint of the SVG content. Changed content, including different theme colors, gets a new filename; unchanged content can reuse the existing file. The bridge rejects conflicting asset contents instead of overwriting files referenced by earlier JSON exports. Existing overwritten assets from older versions cannot be recovered automatically; re-export those designs with the updated plugin.
+SVG filenames use the layer name, such as `icon-cellular-connection.svg`, without node IDs or content fingerprints. An existing `icon` prefix is not repeated. In local-server mode, SVG and image files with the same filename are overwritten with the latest exported content. Frame JSON files and their PNG previews keep numbered filenames and are never replaced. Earlier JSON files referencing a shared asset will therefore use that asset's latest content. If selected frames contain different icons with the same name, the last selected frame's version wins. Node IDs remain in JSON metadata. Download mode offers one asset per filename for the current selection; the browser controls whether existing downloads are renamed or replaced.
 
 If Figma cannot render an SVG or PNG preview (for example, a node with no visible layers), that optional file is skipped. JSON and successfully rendered assets are still exported. The plugin shows warnings with the format, layer name, node ID, and error; the full list is also saved in the JSON `warnings` array. A failed icon has `svgExportError` instead of an `svgAsset` link. This does not change layer visibility or force hidden content to render. Errors exporting the required JSON still stop the operation and identify the affected selected node.
 
@@ -155,7 +206,7 @@ figma-project/
     │   └── settings-no-filter-dark.json
     └── assets/                     # created at startup; populated with JSON + assets
         ├── image-a1b2c3.png
-        └── icon-search-12-34-a1b2c3d4e5f60708.svg
+        └── icon-search.svg
 ```
 
 JSON filenames follow `<node-name>-<visible-only|no-filter>[-dark].json`. If an export would reuse a JSON filename, the exporter adds a suffix such as `-2` rather than replacing the existing file. Asset references in JSON are relative paths such as `../assets/image-a1b2c3.png`.
@@ -187,12 +238,36 @@ Older JSON exports remain readable. If they lack styles, variable definitions, o
 ## Troubleshooting
 
 - **The plugin cannot find a folder:** Confirm the helper is still running, choose **Local server (MCP)**, and press **Refresh**. If needed, use **Manual connection** with the URL and token from the helper terminal.
+- **Cannot reach the local server:** The helper may have stopped or the connection may be blocked. Start it in the target folder, press **Refresh**, and select the server again. The error includes the destination URL. An HTTP 403 indicates a rejected connection token; refresh the selection or update the manual token after restarting the helper.
+- **The server does not respond:** Export requests stop waiting after 15 seconds. Check the helper terminal and destination folder before retrying: a slow request may still finish saving files. Requests are not automatically retried, and any files confirmed before the failure remain listed in the plugin.
 - **`codex` is not found:** Install or configure Codex CLI and ensure `codex` is on your terminal's `PATH`. Browser download mode works without it.
 - **The MCP server does not appear in Codex:** Run `codex mcp list` and restart the Codex session after adding the server.
+- **The monitor cannot load Ink or React:** Run `npm ci` in the repository root, including when upgrading an older checkout. Use Node.js 22 or later.
+- **The monitor needs an interactive or larger terminal:** Open it in a terminal with at least 44 columns and 18 rows. For scripts, use `node bin/figma-mcp.mjs status --json`.
 - **The plugin import fails:** Import `exporter/manifest.json` in Figma desktop. If you changed `code.ts`, rebuild the exporter with `npm run build` in `exporter/` first.
 - **Assets appear missing after browser downloads:** Create sibling `exported/` and `assets/` folders and place each downloaded file in the matching folder so the JSON's relative asset paths resolve.
 - **A hidden selected item is not exported:** Switch from **Visible only** to **No filter**.
 - **“This node may not have any visible layers”:** Check the layer named in the render warning for hidden content, empty geometry, or clipping. JSON and other assets remain available when an optional SVG/PNG fails. **No filter** includes hidden JSON nodes; it does not force Figma to render hidden content. To request only JSON, choose **JSON only** and set **Frame preview** to **None**.
+
+## Development checks
+
+After installing dependencies in all three npm projects, run from the repository root:
+
+```sh
+npm run build --prefix exporter
+npm run build --prefix server
+node test/exporter-context-test.mjs
+node test/exporter-svg-test.mjs
+node test/exporter-connection-test.mjs
+node test/server-context-test.mjs
+node test/bridge-test.mjs
+node test/bridge-port-retry-test.mjs
+node test/launcher-cleanup-test.mjs --real-codex --with-bridge
+npm run test:ui
+npm run test:monitor
+```
+
+Bridge and monitor checks open localhost sockets. Launcher and monitor integration checks use temporary, isolated Codex configuration; they require the Codex CLI. On macOS and Linux, terminal interaction checks also require Python 3. Exporter checks simulate the Figma runtime; verify rendering and downloads in Figma desktop separately.
 
 ## References
 

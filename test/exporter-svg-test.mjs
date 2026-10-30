@@ -15,7 +15,7 @@ const node = (type, name, width = 24, height = 24, children, extra = {}) => {
   result.exportAsync = async (settings) => {
     if (settings.format === 'SVG_STRING') {
       rendered.push(result.id);
-      return `<svg xmlns="http://www.w3.org/2000/svg"><path fill="${revision}" d="M0 0L12 12"/></svg>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" data-node="${result.id}"><path fill="${revision}" d="M0 0L12 12"/></svg>`;
     }
     return { document: toJson(result) };
   };
@@ -40,7 +40,7 @@ const large = node('VECTOR', 'Illustration', 400, 400);
 const imageIcon = node('RECTANGLE', 'Icon/Photo', 24, 24, undefined, { fills: [{ type: 'IMAGE' }] });
 const root = node('FRAME', 'Screen', 400, 800, [button, named, standalone, explicit, primitiveIcon, hidden, keyboard, blank, large, imageIcon]);
 const figma = { showUI() {}, on() {}, notify() {}, ui: { postMessage: (message) => messages.push(message) }, currentPage: { name: 'Page', selection: [root] } };
-const context = vm.createContext({ figma, __html__: '', console, Uint8Array });
+const context = vm.createContext({ figma, __html__: '', console, Uint8Array, setTimeout, clearTimeout });
 vm.runInContext(readFileSync(new URL('../exporter/code.js', import.meta.url), 'utf8'), context);
 const run = async (options = {}) => {
   messages.length = 0;
@@ -65,17 +65,21 @@ assert.equal(find(first.figma.document, button.id).isIcon, false);
 assert.equal(first.assets.length, 5);
 for (const asset of first.assets) {
   assert.equal(find(first.figma.document, asset.nodeId).svgAsset, asset.file);
-  assert.match(asset.file, /-[a-f0-9]{16}\.svg$/);
+  assert.ok(!asset.file.includes('9-'), 'Node IDs must not be appended to filenames');
+  assert.ok(!asset.file.includes('icon-icon-'));
 }
+assert.equal(first.assets.find((asset) => asset.nodeId === glyph.id).file, '../assets/icon-search.svg');
+assert.equal(first.assets.find((asset) => asset.nodeId === named.id).file, '../assets/icon-search.svg');
+assert.equal(first.assets.find((asset) => asset.nodeId === standalone.id).file, '../assets/icon-close.svg');
 const downloads = messages.filter((message) => message.type === 'download-asset');
-assert.equal(downloads.length, 5);
+assert.equal(downloads.length, 4);
 assert.ok(Buffer.from(downloads[0].base64, 'base64').toString().includes('fill="black"'));
 assert.equal(downloads[0].overwrite, undefined);
 const repeated = await run({ includeAssets: true });
 assert.equal(repeated.assets[0].file, first.assets[0].file, 'Unchanged SVG should have a stable name');
 revision = 'white';
 const changed = await run({ includeAssets: true });
-assert.notEqual(changed.assets[0].file, first.assets[0].file, 'A changed SVG must use a different name');
+assert.equal(changed.assets[0].file, first.assets[0].file, 'SVGs should retain the same name across content changes');
 const unfiltered = await run({ includeAssets: true, exportMode: 'no-filter' });
 assert.ok(unfiltered.assets.some((asset) => asset.nodeId === hidden.id));
 assert.ok(!unfiltered.assets.some((asset) => asset.nodeId === keyboardIcon.id));
@@ -146,4 +150,18 @@ const jsonError = messages.find((message) => message.type === 'export-error');
 assert.ok(jsonError.error.includes('JSON export failed'));
 assert.ok(jsonError.error.includes(empty.name) && jsonError.error.includes(empty.id));
 assert.ok(!messages.some((message) => message.type === 'download-complete'));
-console.log('SVG detection, clipping, exclusions, immutable revisions, and partial rendering failures in both modes passed.');
+const sharedA = node('INSTANCE', 'Icon / Cellular Connection', 24, 24, [vector()]);
+const sharedB = node('INSTANCE', 'cellular-connection', 24, 24, [vector()]);
+sharedA.exportAsync = sharedB.exportAsync = async () => '<svg><path d="M0 0L2 2"/></svg>';
+const screenA = node('FRAME', 'Screen A', 400, 800, [sharedA]);
+const screenB = node('FRAME', 'Screen B', 400, 800, [sharedB]);
+figma.currentPage.selection = [screenA, screenB];
+await run({ includeAssets: true });
+assert.equal(messages.filter((message) => message.type === 'download-asset').length, 1, 'Identical same-name assets across frames should be reused');
+assert.equal(messages.find((message) => message.type === 'download-asset').filename, 'icon-cellular-connection.svg');
+sharedB.exportAsync = async () => '<svg><path d="M0 0L3 3"/></svg>';
+await run({ includeAssets: true });
+const latestDownload = messages.filter((message) => message.type === 'download-asset');
+assert.deepEqual(latestDownload.map((message) => message.filename), ['icon-cellular-connection.svg']);
+assert.ok(Buffer.from(latestDownload[0].base64, 'base64').toString().includes('L3 3'), 'The last selected frame supplies the same-name asset');
+console.log('SVG readable names, same-name replacement, clipping, exclusions and partial render failures passed.');
