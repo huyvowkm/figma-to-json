@@ -75,19 +75,30 @@ try {
   const orphan = await exportPreview().then((response) => response.json());
   if (orphan.saved !== 'test-5.json' || readFileSync(join(cache, 'exported', 'test-4.png'), 'utf8') !== 'keep this orphan') throw new Error('Existing orphan PNG was overwritten.');
   if ((await exportPreview(Buffer.from('not PNG').toString('base64'))).status !== 400) throw new Error('Invalid PNG was accepted.');
-  const saveIcon = (content, filename = 'icon-search-1-aabbcc.svg', overwrite = false) => fetch(`${manualConnection.url}/export`, {
+  const saveIcon = (content) => fetch(`${manualConnection.url}/export`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
-    body: JSON.stringify({ filename: 'icons.json', payload: { assets: [{ file: `../assets/${filename}` }] },
-      assets: [{ filename, base64: Buffer.from(content).toString('base64'), overwrite }] }),
+    body: JSON.stringify({ filename: 'icons.json', payload: { assets: [{ file: '../assets/icon-search.svg' }], figma: { document: { id: '1:1', svgAsset: '../assets/icon-search.svg' } } },
+      assets: [{ filename: 'icon-search.svg', base64: Buffer.from(content).toString('base64') }] }),
   });
   if ((await saveIcon('<svg>old</svg>')).status !== 201) throw new Error('SVG export failed.');
-  if ((await saveIcon('<svg>old</svg>')).status !== 201) throw new Error('Identical SVG was not reused.');
-  if ((await saveIcon('<svg>changed</svg>', 'icon-search-1-aabbcc.svg', true)).status !== 400) throw new Error('Existing SVG could be overwritten.');
-  if (readFileSync(join(cache, 'assets', 'icon-search-1-aabbcc.svg'), 'utf8') !== '<svg>old</svg>') throw new Error('Previous SVG content changed.');
-  if ((await saveIcon('<svg>changed</svg>', 'icon-search-1-ddeeff.svg')).status !== 201) throw new Error('New SVG revision could not be saved.');
-  const iconPayload = JSON.parse(readFileSync(join(cache, 'exported', 'icons-3.json'), 'utf8'));
-  if (iconPayload.assets[0].file !== '../assets/icon-search-1-ddeeff.svg') throw new Error('SVG revision reference was incorrect.');
-  console.log('Bridge discovery, authentication, PNG pairs, asset reuse, immutable SVG revisions, and collision checks passed.');
+  const originalFrame = readFileSync(join(cache, 'exported', 'icons.json'), 'utf8');
+  const changed = await saveIcon('<svg>changed</svg>');
+  const changedResult = await changed.json();
+  if (changed.status !== 201 || changedResult.saved !== 'icons-2.json' || changedResult.assets[0] !== 'icon-search.svg') throw new Error('Asset replacement or numbered frame naming failed.');
+  if (readFileSync(join(cache, 'assets', 'icon-search.svg'), 'utf8') !== '<svg>changed</svg>') throw new Error('SVG was not overwritten.');
+  if (readFileSync(join(cache, 'exported', 'icons.json'), 'utf8') !== originalFrame) throw new Error('Previous frame JSON was overwritten.');
+  const iconPayload = JSON.parse(readFileSync(join(cache, 'exported', 'icons-2.json'), 'utf8'));
+  if (iconPayload.assets[0].file !== '../assets/icon-search.svg' || iconPayload.figma.document.svgAsset !== '../assets/icon-search.svg') throw new Error('SVG references did not retain their simple name.');
+  const imageBytes = Buffer.from(png, 'base64');
+  for (const bytes of [imageBytes, Buffer.concat([imageBytes, Buffer.from('updated')])]) {
+    const response = await fetch(`${manualConnection.url}/export`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+      body: JSON.stringify({ filename: 'images.json', payload: { ok: true }, assets: [{ filename: 'image-photo.png', base64: bytes.toString('base64') }] }),
+    });
+    if (response.status !== 201 || !readFileSync(join(cache, 'assets', 'image-photo.png')).equals(bytes)) throw new Error('Raster image was not overwritten.');
+  }
+  if (!statSync(join(cache, 'exported', 'images-2.json')).isFile()) throw new Error('Repeated image export did not preserve its earlier frame file.');
+  console.log('Bridge startup, protected frame/PNG numbering, SVG and image replacement, and asset references passed.');
 } finally {
   child.kill();
   rmSync(root, { recursive: true, force: true });

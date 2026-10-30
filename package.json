@@ -1,0 +1,19 @@
+{
+  "name": "figma-to-json-tools",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "monitor": "node bin/figma-mcp.mjs monitor",
+    "test:ui": "node test/monitor-ui-test.mjs",
+    "test:monitor": "node test/monitor-test.mjs"
+  },
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.1",
+    "string-width": "^8.3.0",
+    "wrap-ansi": "^9.0.2"
+  }
+}
