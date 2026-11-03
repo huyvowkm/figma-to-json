@@ -7,7 +7,7 @@ Export selected Figma frames and components as JSON, with optional assets and PN
 Requires Figma Desktop, Git, and Node.js 22 or later.
 
 ```sh
-git clone git@github.com:huyvowkm/figma-to-json.git
+git clone https://github.com/huyvowkm/figma-to-json.git
 cd figma-to-json
 npm ci --prefix exporter
 npm run build --prefix exporter

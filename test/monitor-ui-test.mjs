@@ -58,7 +58,7 @@ const narrow = renderMonitor(rows, { selected: 29, columns: 80, height: 24 });
 assert.equal(narrow.split('┌').length - 1, 2, 'Narrow layout needs list and selected-detail tables');
 assert.ok(narrow.split('Selected server')[1].includes('figma-project-29'));
 assert.ok(!narrow.split('Selected server')[1].includes('figma-project-28'));
-const longRow = { ...rows[0], name: 'figma-998-14-jab-jab-mobile-6c4622f4', project: '/Users/example/sample-mobile-app chú/📁/998_14_jab_jab-mobile' };
+const longRow = { ...rows[0], name: 'figma-sample-mobile-app-6c4622f4', project: '/Users/example/Documents/apps/日本語/ghi chú/📁/sample-mobile-app' };
 for (const columns of [44, 80, 160, 300]) {
   for (const height of [18, 24, 40]) {
     const lines = strip(renderMonitor([longRow], { columns, height })).split('\n');
