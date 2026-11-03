@@ -66,8 +66,8 @@
       <div class="main-header"><button id="settings-back">← Back</button><h3>Settings</h3></div>
       <p>Choose where the exported JSON goes. This choice is saved for next time.</p>
       <section class="mode-option">
-        <label><input type="radio" name="connection-mode" value="local-server" /><span><strong>Local server (MCP)</strong><small>Save JSON, images, and detected SVG icons in any folder for your local Codex MCP tools.</small></span></label>
-        <div class="mode-guide"><strong>How to use</strong><ol><li>Open a terminal in the project folder you want to use, then run <code>node "/path/to/figma-mcp/bin/figma-mcp.mjs"</code>. It uses that current folder. You can instead pass <code>--output-dir "PATH_TO_FOLDER"</code>. Keep the command running.</li><li>Return to the exporter and select the folder that appears, or enter a manual connection.</li><li>Export. JSON files go into <code>.figma-cache/exported</code>; images and SVG icons go into <code>.figma-cache/assets</code> when JSON + assets is selected. SVG detection uses names, small vector shapes, and Figma SVG export settings. Keyboard subtrees are excluded. For a missed icon, add an SVG export setting in Figma and export again.</li></ol></div>
+        <label><input type="radio" name="connection-mode" value="local-server" /><span><strong>Save to project folder</strong><small>Save JSON and optional assets to a project folder through a local bridge.</small></span></label>
+        <div class="mode-guide"><strong>How to use</strong><ol><li>Run <code>node "/path/to/figma-to-json/bin/bridge.mjs" "/path/to/project" "/path/to/project/.figma-cache"</code> in a terminal. Keep it running.</li><li>Select the active folder, or enter the bridge URL and token manually.</li><li>Export. JSON goes into <code>.figma-cache/exported</code>; assets go into <code>.figma-cache/assets</code>.</li></ol></div>
       </section>
       <section class="mode-option">
         <label><input type="radio" name="connection-mode" value="download" /><span><strong>Download JSON</strong><small>Export files from Figma without starting a local server.</small></span></label>

@@ -24,7 +24,7 @@ In Figma Desktop, import `exporter/manifest.json` from **Plugins → Development
   node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache
   ```
 
-  In the plugin, choose **Settings → Local server (MCP)**, select the active folder, and export. Keep the bridge running. JSON goes in `.figma-cache/exported/`; assets go in `.figma-cache/assets/`.
+  In the plugin, choose **Settings → Save to project folder**, select the active folder, and export. Keep the bridge running. JSON goes in `.figma-cache/exported/`; assets go in `.figma-cache/assets/`.
 
 ## Optional: read exports with Codex
 

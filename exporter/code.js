@@ -45,7 +45,7 @@ figma.ui.onmessage = async (message) => {
         return;
     }
     if (message.type === 'scan-bridges') {
-        figma.notify('Scanning local Figma MCP folders…');
+        figma.notify('Finding active export folders…');
         const errors = [];
         const projects = (await Promise.all(Array.from({ length: 21 }, async (_, index) => {
             const port = 3847 + index;
@@ -62,7 +62,7 @@ figma.ui.onmessage = async (message) => {
                 return null;
             }
         }))).filter(Boolean);
-        figma.notify(projects.length ? `Found ${projects.length} local folder connection${projects.length === 1 ? '' : 's'}.` : 'No local Figma MCP folder was reachable.');
+        figma.notify(projects.length ? `Found ${projects.length} export folder${projects.length === 1 ? '' : 's'}.` : 'No active export folder was found.');
         figma.ui.postMessage({ type: 'bridge-results', projects, errors });
         return;
     }
@@ -72,7 +72,7 @@ figma.ui.onmessage = async (message) => {
     if (connectionMode === 'local-server' && (!message.bridge || !message.token)) {
         figma.ui.postMessage({
             type: 'export-error',
-            error: 'Select a local folder before exporting in Local server mode.',
+            error: 'Select a project folder before exporting to a local folder.',
             connectionMode,
         });
         return;
