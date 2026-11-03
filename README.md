@@ -6,6 +6,30 @@ Use **Download JSON** for standalone exports inside Figma. An optional local hel
 
 I built this after running into rate limits while requesting Figma design data through MCP. I wanted a way to export selected designs as JSON once and keep the data locally. Figma to JSON makes those files available through a local MCP server, reducing repeat requests for designs that have already been exported.
 
+## Quick start
+
+Choose **Download JSON** for standalone exports; it needs no Codex setup. To use local exports with Codex:
+
+1. Clone the repository and build the exporter and server as described in [Clone and build](#clone-and-build). Node.js 22 or later and Codex CLI are required for the local helper.
+2. Import `exporter/manifest.json` into Figma Desktop as a development plugin, as described in [Import the Figma plugin](#import-the-figma-plugin).
+3. In the project folder where you want to save exports, start the helper:
+
+   ```sh
+   node /path/to/figma-to-json/bin/figma-mcp.mjs
+   ```
+
+   It creates `.figma-cache/` in that folder and registers the local MCP server with Codex.
+4. In the plugin, open **Settings → Local server (MCP)**, select the active folder, then export the selected Figma frames or components.
+5. The repository includes a Codex skill at `.codex/skills/figma-cache/SKILL.md`. To use it while working in other repositories, install it in your user skills directory. Replace `/path/to/figma-to-json` with the path to your clone:
+
+   ```sh
+   mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills/figma-cache"
+   cp /path/to/figma-to-json/.codex/skills/figma-cache/SKILL.md \
+     "${CODEX_HOME:-$HOME/.codex}/skills/figma-cache/SKILL.md"
+   ```
+
+   Start a new Codex session after installing the skill or registering the local server. Keep the helper running while exporting. The skill guides Codex through the current project's cache; it does not start the helper.
+
 ## Features
 
 - Export selected frames, components, component sets, and instances. Multiple selections produce one JSON file per selected item.
