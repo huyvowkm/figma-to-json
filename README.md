@@ -49,3 +49,5 @@ In Figma Desktop:
   - Files are saved here:
     - JSON: `.figma-cache/exported/`
     - Assets: `.figma-cache/assets/`
+
+See the [Privacy Policy](PRIVACY_POLICY.md) for data handling details.
