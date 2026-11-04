@@ -13,15 +13,39 @@ npm ci --prefix exporter
 npm run build --prefix exporter
 ```
 
-In Figma Desktop, import `exporter/manifest.json` from **Plugins → Development → Import plugin from manifest…**. Select a frame and run **Figma to JSON**.
+In Figma Desktop:
+
+- Go to **Plugins → Development → Import plugin from manifest…**.
+- Select `exporter/manifest.json`.
+- Select a frame and run **Figma to JSON**.
 
 ## Export settings
 
-- **Export filter:** **Visible only** omits hidden content; **No filter** includes it.
-- **Content:** Choose **JSON only** or **JSON + assets** to include detected images and SVG icons.
-- **Frame preview:** Choose **None** or **PNG preview** to save a PNG alongside each JSON file.
+- **Export filter**
+  - **Visible only** omits hidden content.
+  - **No filter** includes hidden content.
+- **Content**
+  - **JSON only** exports just the JSON.
+  - **JSON + assets** also includes detected images and SVG icons.
+- **Frame preview**
+  - **None** skips the PNG preview.
+  - **PNG preview** saves a PNG alongside each JSON file.
 
 ## Choose where to save exports
 
-- **Download JSON:** In **Settings**, choose **Download JSON**. Select frames or components, set the export options, click **Prepare downloads**, then click each generated link. No local server is needed.
-- **Save to project folder:** Run `node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache` from this repository and keep it running. In **Settings**, choose **Save to project folder**, select the active folder, then click **Export selected**. JSON is saved in `.figma-cache/exported/`; assets are saved in `.figma-cache/assets/`.
+- **Download JSON**
+  - In **Settings**, choose **Download JSON**.
+  - Select frames or components, set the export options, and click **Prepare downloads**.
+  - Click each generated link. No local server is needed.
+- **Save to project folder**
+  - From this repository, start the local bridge and leave it running:
+
+    ```sh
+    node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache
+    ```
+
+  - In **Settings**, choose **Save to project folder** and select the active folder.
+  - Select frames or components, set the export options, and click **Export selected**.
+  - Files are saved here:
+    - JSON: `.figma-cache/exported/`
+    - Assets: `.figma-cache/assets/`
