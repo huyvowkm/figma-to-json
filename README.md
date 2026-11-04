@@ -44,8 +44,7 @@ In Figma Desktop:
     node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache
     ```
 
-  - In **Settings**, choose **Save to project folder**, then return to the main view and select the active folder.
-  - Paste the token printed in the helper terminal into the connection field and click **Use connection**.
+  - In **Settings**, choose **Save to project folder**, then return to the main view and select the active folder to connect.
   - Select frames or components, set the export options, and click **Export selected**.
   - Files are saved here:
     - JSON: `.figma-cache/exported/`

@@ -70,8 +70,8 @@ try {
   const health = await fetch(`http://localhost:${row.port}/health`).then((r) => r.json());
   const json = run('status', '--json');
   assert.equal(JSON.parse(json).filter(owned).length, 2);
-  assert.equal(Object.hasOwn(health, 'token'), false, 'Health discovery must not expose the connection token');
-  assert.ok(!json.includes('"token"'), 'Status must never expose the connection token');
+  assert.equal(typeof health.token, 'string', 'Health discovery returns the connection token for the plugin');
+  assert.ok(!json.includes(health.token), 'Local monitor status must never expose the connection token');
   const forbidden = await fetch(`http://localhost:${row.port}/shutdown`, { method: 'POST' });
   assert.equal(forbidden.status, 403, 'Stopping requires authentication');
   assert.equal((await fetch(`http://localhost:${row.port}/health`)).status, 200);

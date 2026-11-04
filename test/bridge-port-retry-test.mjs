@@ -39,11 +39,12 @@ try {
   assert.notEqual(port, 3847, 'The bridge must skip the occupied port');
   assert.equal((output.match(/Token:/g) || []).length, 1);
   assert.equal((output.match(/Export folder:/g) || []).length, 1);
+  const token = output.match(/Token: ([a-f0-9]+)/)?.[1];
   const health = await fetch(`http://localhost:${port}/health`).then((response) => response.json());
   assert.equal(health.port, port);
   assert.equal(health.project, root);
   assert.equal(health.exportDirectory, join(cache, 'exported'));
-  assert.equal(Object.hasOwn(health, 'token'), false, 'Discovery must not expose the connection token');
+  assert.equal(health.token, token, 'Active-folder discovery returns the connection token');
   console.log('Occupied-port retry reports one accurate URL, token, and export folder.');
 } finally {
   const stopped = once(child, 'close');

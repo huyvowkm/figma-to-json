@@ -198,6 +198,7 @@
             name: (data.project || data.exportDirectory || 'Folder').split(/[\\/]/).filter(Boolean).pop() || 'Folder',
             exportDirectory: data.exportDirectory || '',
             url: `http://localhost:${data.port}`,
+            token: data.token,
           };
           const button = document.createElement('button');
           button.className = `project${active?.url === project.url ? ' selected' : ''}`;
@@ -211,13 +212,10 @@
             button.appendChild(check);
           }
           button.onclick = () => {
-            active = { ...project, token: '' };
-            document.getElementById('manual-url').value = project.url;
-            document.getElementById('manual-token').value = '';
-            document.getElementById('manual-panel').hidden = false;
+            active = project;
             renderTarget();
-            status.textContent = 'Paste the token printed in the helper terminal, then choose Use connection.';
-            document.getElementById('manual-token').focus();
+            status.textContent = `Connected to ${project.name}.`;
+            parent.postMessage({ pluginMessage: { type: 'scan-bridges' } }, '*');
           };
           container.appendChild(button);
         });
@@ -269,7 +267,7 @@
       renderTarget();
       status.textContent = 'Loading saved settings…';
       exportButton.onclick = () => {
-        if (connectionMode === 'local-server' && (!active || !active.token)) { status.textContent = 'Select a folder and enter its helper token first.'; return; }
+        if (connectionMode === 'local-server' && (!active || !active.token)) { status.textContent = 'Select an active local folder first.'; return; }
         if (!getCurrentExportableCount()) { status.textContent = 'Select at least one exportable item first.'; return; }
         exportingTo = connectionMode === 'download' ? 'your browser Downloads folder' : active.name;
         clearExportResults();

@@ -64,7 +64,7 @@ function writeAssets(assets) {
 const bridge = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (req.method === 'GET' && req.url === '/health') return send(res, 200, {
-    project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port,
+    project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port, token,
     instanceId, startedAt, pid: process.pid, launcherPid: process.ppid,
     server: registration?.server, supportsShutdown: true,
   });

@@ -42,19 +42,19 @@ try {
   if (!token) throw new Error('Bridge did not print a token.');
   const health = await fetch(`http://localhost:${port}/health`).then((response) => response.json());
   if (health.project !== root) throw new Error('Health endpoint returned the wrong project.');
-  if (health.port !== port || Object.hasOwn(health, 'token')) throw new Error('Health endpoint exposed the token or omitted the active bridge.');
+  if (health.port !== port || health.token !== token) throw new Error('Health endpoint did not return the active bridge token.');
   if (readBridgeState(health.instanceId)?.token !== token) throw new Error('The helper did not save its shutdown token to private local state.');
   const activeProject = {
     name: health.project.split('/').pop(),
     url: `http://localhost:${health.port}`,
-    token: '',
+    token: health.token,
   };
-  if (activeProject.name !== root.split('/').pop() || activeProject.url !== `http://localhost:${port}` || activeProject.token) {
-    throw new Error('Health response should identify the active folder without its connection token.');
+  if (activeProject.name !== root.split('/').pop() || activeProject.url !== `http://localhost:${port}` || activeProject.token !== token) {
+    throw new Error('Health response could not produce the active project connection.');
   }
   const manualConnection = { url: `http://localhost:${port}`, token };
-  if (manualConnection.url !== activeProject.url || manualConnection.token !== token) {
-    throw new Error('Manual connection values did not use the token printed by the helper.');
+  if (manualConnection.url !== activeProject.url || manualConnection.token !== activeProject.token) {
+    throw new Error('Active and manual connection values should match the running bridge.');
   }
   const forbidden = await fetch(`http://localhost:${port}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   if (forbidden.status !== 403) throw new Error(`Unauthenticated export was not rejected: ${forbidden.status}`);

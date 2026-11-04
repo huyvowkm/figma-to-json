@@ -12,7 +12,9 @@ Design to JSON exports design content that you select in Figma Design.
 - The selected connection mode, saved in Figma client storage as a preference.
 - A random local bridge token used to authorize folder exports.
 
-The plugin does not save exported design content, local folder paths, or bridge tokens in Figma client storage. For local saves, the token is printed in the helper terminal and entered in the plugin by the user; folder discovery does not return it. The helper keeps the token in a user-private temporary file so its local monitor can stop the helper, then removes the file when it exits normally.
+The plugin does not save exported design content, local folder paths, or bridge tokens in Figma client storage. For local saves, the helper returns its token to the plugin through its localhost health response so the plugin can connect automatically. The token remains in plugin memory during the session. The helper also keeps it in a user-private temporary file so its local monitor can stop the helper, then removes the file when it exits normally.
+
+The helper allows cross-origin browser requests. A webpage that the browser permits to reach `localhost` may read the token and use it to write files in the configured export cache or stop the helper. The token changes when the helper restarts.
 
 ## Where exported data goes
 
