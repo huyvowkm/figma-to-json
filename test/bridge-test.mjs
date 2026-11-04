@@ -96,13 +96,13 @@ try {
 
   const forbidden = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   if (forbidden.status !== 403) throw new Error(`Unauthenticated export was not rejected: ${forbidden.status}`);
-  const crossOriginExport = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token, Origin: 'null' }, body: JSON.stringify({ filename: 'cross-origin.json', payload: { ok: true } }) });
+  const crossOriginExport = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Design-Export-Token': token, Origin: 'null' }, body: JSON.stringify({ filename: 'cross-origin.json', payload: { ok: true } }) });
   assert.equal(crossOriginExport.status, 201);
   assert.equal(crossOriginExport.headers.get('access-control-allow-origin'), '*');
   assert.equal(statSync(join(cache, 'exported')).isDirectory(), true);
-  const preflight = await fetch(`${origin}/export`, { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type,x-figma-mcp-token' } });
+  const preflight = await fetch(`${origin}/export`, { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type,x-design-export-token' } });
   assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
-  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /x-figma-mcp-token/i);
+  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /x-design-export-token/i);
   const wrongShutdown = await fetch(`${origin}/shutdown`, {
     method: 'POST', headers: { 'X-Figma-Mcp-Token': token, Origin: 'https://attacker.example' },
   });
@@ -112,7 +112,7 @@ try {
   const filesBeforeOversize = readdirSync(join(cache, 'exported')).sort();
   const oversizeResponse = await new Promise((resolve, reject) => {
     const socket = createConnection({ host: 'localhost', port }, () => {
-      socket.write(`POST /export HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Type: application/json\r\nX-Figma-Mcp-Token: ${token}\r\nContent-Length: ${128 * 1024 * 1024 + 1}\r\nConnection: close\r\n\r\n`);
+      socket.write(`POST /export HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Type: application/json\r\nX-Design-Export-Token: ${token}\r\nContent-Length: ${128 * 1024 * 1024 + 1}\r\nConnection: close\r\n\r\n`);
     });
     let response = '';
     socket.setTimeout(3000, () => { socket.destroy(); reject(new Error('Oversize request was not rejected before reading its body.')); });
@@ -125,12 +125,12 @@ try {
   assert.match(oversizeResponse, /^HTTP\/1\.1 413/m);
   assert.deepEqual(readdirSync(join(cache, 'exported')).sort(), filesBeforeOversize, 'Oversize request must not write files.');
 
-  const saved = await fetch(`${manualConnection.url}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token }, body: JSON.stringify({ filename: 'test.json', payload: { ok: true } }) });
+  const saved = await fetch(`${manualConnection.url}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Design-Export-Token': token }, body: JSON.stringify({ filename: 'test.json', payload: { ok: true } }) });
   if (saved.status !== 201) throw new Error(`Export endpoint failed: ${await saved.text()}`);
   if (JSON.parse(readFileSync(join(cache, 'exported', 'test.json'), 'utf8')).ok !== true) throw new Error('Export file content was incorrect.');
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=';
   const exportPreview = (base64 = png) => fetch(`${manualConnection.url}/export`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Design-Export-Token': token },
     body: JSON.stringify({ filename: 'test.json', payload: { ok: true, preview: { file: 'old-name.png' } }, preview: { base64 } }),
   });
   const second = await exportPreview().then((response) => response.json());
@@ -145,7 +145,7 @@ try {
   if (orphan.saved !== 'test-5.json' || readFileSync(join(cache, 'exported', 'test-4.png'), 'utf8') !== 'keep this orphan') throw new Error('Existing orphan PNG was overwritten.');
   if ((await exportPreview(Buffer.from('not PNG').toString('base64'))).status !== 400) throw new Error('Invalid PNG was accepted.');
   const saveIcon = (content) => fetch(`${manualConnection.url}/export`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Design-Export-Token': token },
     body: JSON.stringify({ filename: 'icons.json', payload: { assets: [{ file: '../assets/icon-search.svg' }], figma: { document: { id: '1:1', svgAsset: '../assets/icon-search.svg' } } },
       assets: [{ filename: 'icon-search.svg', base64: Buffer.from(content).toString('base64') }] }),
   });
@@ -161,7 +161,7 @@ try {
   const imageBytes = Buffer.from(png, 'base64');
   for (const bytes of [imageBytes, Buffer.concat([imageBytes, Buffer.from('updated')])]) {
     const response = await fetch(`${manualConnection.url}/export`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Design-Export-Token': token },
       body: JSON.stringify({ filename: 'images.json', payload: { ok: true }, assets: [{ filename: 'image-photo.png', base64: bytes.toString('base64') }] }),
     });
     if (response.status !== 201 || !readFileSync(join(cache, 'assets', 'image-photo.png')).equals(bytes)) throw new Error('Raster image was not overwritten.');

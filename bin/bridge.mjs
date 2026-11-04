@@ -24,7 +24,7 @@ const preferredPort = Number(process.env.FIGMA_MCP_PORT ?? 3847);
 const exportCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-Figma-Mcp-Token',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Design-Export-Token',
 };
 const send = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
@@ -125,7 +125,7 @@ const bridge = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'POST' && path === '/export') {
-    if (!isLocalHost(req) || req.headers['x-figma-mcp-token'] !== token) {
+    if (!isLocalHost(req) || req.headers['x-design-export-token'] !== token) {
       req.resume();
       return send(res, 403, { error: 'Forbidden' }, exportCorsHeaders);
     }

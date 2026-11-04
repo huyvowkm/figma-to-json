@@ -328,7 +328,7 @@ async function sendToBridge(url: string, token: string, body: string): Promise<u
         try {
           response = await fetch(`${url}/export`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+            headers: { 'Content-Type': 'application/json', 'X-Design-Export-Token': token },
             body,
           });
         } catch (error) {

@@ -87,7 +87,7 @@ assert.deepEqual([...harness.storage.entries()], [['connection-mode', 'download'
 await harness.figma.ui.onmessage({ type: 'export-selection', connectionMode: 'local-server' });
 assert.ok(harness.fetches.includes('http://localhost:3847/export'), 'The main thread writes to the selected bridge.');
 const exportRequest = harness.fetchOptions.find((options, index) => harness.fetches[index].endsWith('/export'));
-assert.equal(exportRequest.headers['X-Figma-Mcp-Token'], 'session-secret');
+assert.equal(exportRequest.headers['X-Design-Export-Token'], 'session-secret');
 assert.equal(harness.messages.at(-1).message.type, 'export-complete');
 assert.ok(!JSON.stringify(harness.messages).includes('session-secret'));
 console.log('Per-run helper discovery, URL validation, in-panel server selection, no-ID connection, and main-thread exports passed.');
