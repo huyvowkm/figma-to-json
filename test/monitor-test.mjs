@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
 import { serverStatus, stopServer, cleanServers } from '../bin/monitor.mjs';
 import { trackServer } from '../bin/server-state.mjs';
+import { readBridgeState } from '../bin/bridge-state.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'figma-monitor-test-'));
 const home = join(root, 'codex');
@@ -70,10 +71,17 @@ try {
   const health = await fetch(`http://localhost:${row.port}/health`).then((r) => r.json());
   const json = run('status', '--json');
   assert.equal(JSON.parse(json).filter(owned).length, 2);
-  assert.equal(typeof health.token, 'string', 'Health discovery returns the connection token for the plugin');
-  assert.ok(!json.includes(health.token), 'Local monitor status must never expose the connection token');
+  assert.equal(health.token, undefined, 'Health discovery must not return the connection token');
+  assert.equal(health.project, undefined, 'Health discovery must not return the project path');
+  assert.equal(health.exportDirectory, undefined, 'Health discovery must not return the export path');
+  const state = readBridgeState(health.instanceId);
+  assert.equal(typeof state.token, 'string', 'The monitor reads its token from private local state');
+  assert.equal(state.project, first.project, 'The monitor reads the project path from private local state');
+  assert.equal(state.exportDirectory, join(first.project, '.figma-cache/exported'));
+  assert.ok(!json.includes(state.token), 'Local monitor status must never expose the connection token');
   const forbidden = await fetch(`http://localhost:${row.port}/shutdown`, { method: 'POST' });
   assert.equal(forbidden.status, 403, 'Stopping requires authentication');
+  assert.equal(forbidden.headers.get('access-control-allow-origin'), null, 'Shutdown must not enable CORS');
   assert.equal((await fetch(`http://localhost:${row.port}/health`)).status, 200);
 
   if (process.platform !== 'win32') {

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed design. The user approved this direction on 2026-11-04. Product code has not changed for this design.
+Approved design (2026-11-04). Implementation and automated checks are complete; Figma Desktop validation remains pending.
 
 ## Goal and constraints
 

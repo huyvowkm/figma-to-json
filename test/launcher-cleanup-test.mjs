@@ -11,7 +11,7 @@ const bin = join(root, 'bin');
 mkdirSync(bin);
 copyFileSync(new URL('../bin/figma-mcp.mjs', import.meta.url), join(bin, 'figma-mcp.mjs'));
 copyFileSync(new URL('../bin/registration.mjs', import.meta.url), join(bin, 'registration.mjs'));
-for (const file of ['codex-config.mjs', 'server-state.mjs', 'monitor.mjs', 'monitor-ui.mjs', 'monitor-app.mjs', 'display-path.mjs']) {
+for (const file of ['codex-config.mjs', 'server-state.mjs', 'monitor.mjs', 'monitor-ui.mjs', 'monitor-app.mjs', 'display-path.mjs', 'bridge-state.mjs', 'read-limited-body.mjs']) {
   copyFileSync(new URL(`../bin/${file}`, import.meta.url), join(bin, file));
 }
 writeFileSync(join(bin, 'bridge.mjs'), `
@@ -218,6 +218,9 @@ finally:
   }
   if (process.argv.includes('--with-bridge')) {
     copyFileSync(new URL('../bin/bridge.mjs', import.meta.url), join(bin, 'bridge.mjs'));
+    const exporter = join(root, 'exporter');
+    mkdirSync(exporter);
+    copyFileSync(new URL('../exporter/ui.html', import.meta.url), join(exporter, 'ui.html'));
     const folder = setup('real-bridge');
     const owner = await launch(folder);
     const duplicate = await launch(folder, 'duplicate');

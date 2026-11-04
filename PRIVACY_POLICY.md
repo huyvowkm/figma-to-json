@@ -12,20 +12,24 @@ Design to JSON exports design content that you select in Figma Design.
 - The selected connection mode, saved in Figma client storage as a preference.
 - A random local bridge token used to authorize folder exports.
 
-The plugin does not save exported design content, local folder paths, or bridge tokens in Figma client storage. For local saves, the helper returns its token to the plugin through its localhost health response so the plugin can connect automatically. The token remains in plugin memory during the session. The helper also keeps it in a user-private temporary file so its local monitor can stop the helper, then removes the file when it exits normally.
+The plugin does not save exported design content, local folder paths, or bridge tokens in Figma client storage. The selected connection mode is the only plugin preference stored there.
 
-The helper allows cross-origin browser requests. A webpage that the browser permits to reach `localhost` may read the token and use it to write files in the configured export cache or stop the helper. The token changes when the helper restarts.
+For local saves, the plugin discovers helpers through `/health`, which returns the port, a random instance ID, display names, and shutdown support. It does not return tokens, absolute paths, or process IDs. This metadata endpoint allows cross-origin reads so the bundled plugin UI can discover local helpers.
+
+After you select a helper, it serves the plugin UI from `http://localhost`. That same-origin UI retrieves the token from `/session` into page memory and sends exports to `/export`. The token is not sent through Figma messages. `/session`, `/export`, and `/shutdown` do not enable CORS and reject mismatched local host, origin, or browser fetch-site headers. The helper accepts export requests up to 128 MiB; larger requests are rejected before parsing or writing files.
+
+The helper keeps its random token, local paths, and process details in a user-private temporary state file so the local monitor can identify and stop it. The helper does not print the token and removes the state file when it exits normally. An abnormal termination may leave the permission-restricted temporary file behind.
 
 ## Where exported data goes
 
 - **Download JSON:** The plugin prepares files in memory and provides download links in the plugin. Files are saved when you click the links, using your browser's download settings.
 - **Save to project folder:** The plugin sends the selected export to the local bridge running on your computer. The bridge writes JSON to `.figma-cache/exported/` and assets to `.figma-cache/assets/` in the folder you configured.
 
-The plugin does not send export data to the developer or to third-party servers. It does not use analytics or advertising. The local bridge listens on `localhost` and uses a random token for each run.
+The plugin does not send export data to the developer or to third-party servers. It does not use analytics or advertising. The local bridge listens on `localhost` and uses a random token for each run. Local folder saving requires a Figma-assigned plugin ID so the locally served UI can use Figma's restricted message routing.
 
 ## Data retention and deletion
 
-Downloaded or folder-exported files remain where your browser or local bridge saved them until you delete them. Stop the local bridge when you are finished. The plugin stores only the destination preference in Figma client storage.
+Downloaded or folder-exported files remain where your browser or local bridge saved them until you delete them. Stop the local bridge when you are finished. On normal shutdown, its temporary token state is removed. The plugin stores only the connection-mode preference in Figma client storage.
 
 ## Contact
 

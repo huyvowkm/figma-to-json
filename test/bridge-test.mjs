@@ -1,8 +1,10 @@
-import { mkdtempSync, statSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import { mkdtempSync, statSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createConnection } from 'node:net';
 import { readBridgeState } from '../bin/bridge-state.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'figma-mcp-test-'));
@@ -35,30 +37,99 @@ try {
       reject(new Error(`Bridge exited before starting: ${errors}`));
     });
   });
-  const token = output.match(/Token: ([a-f0-9]+)/)?.[1];
+  assert.ok(!output.includes('Token:'), 'The helper must not print the local token.');
   for (const folder of ['assets', 'exported']) {
     if (!statSync(join(cache, folder)).isDirectory()) throw new Error(`Startup did not create ${folder}.`);
   }
-  if (!token) throw new Error('Bridge did not print a token.');
-  const health = await fetch(`http://localhost:${port}/health`).then((response) => response.json());
-  if (health.project !== root) throw new Error('Health endpoint returned the wrong project.');
-  if (health.port !== port || health.token !== token) throw new Error('Health endpoint did not return the active bridge token.');
-  if (readBridgeState(health.instanceId)?.token !== token) throw new Error('The helper did not save its shutdown token to private local state.');
+  const healthResponse = await fetch(`http://localhost:${port}/health`);
+  assert.equal(healthResponse.headers.get('access-control-allow-origin'), '*', 'Only discovery metadata needs wildcard CORS.');
+  assert.equal(healthResponse.headers.get('cache-control'), 'no-store', 'Discovery must report the active helpers on each run.');
+  const health = await healthResponse.json();
+  assert.deepEqual(Object.keys(health).sort(), ['exportDirectoryName', 'instanceId', 'port', 'projectName', 'supportsShutdown'].sort());
+  assert.equal(health.projectName, basename(root));
+  assert.equal(health.exportDirectoryName, 'exported');
+  assert.equal(health.port, port);
+  assert.equal(typeof health.instanceId, 'string');
+  const localState = readBridgeState(health.instanceId);
+  assert.equal(localState?.token?.length, 48, 'The helper must keep its token in private local state.');
+  assert.equal(localState?.project, root);
+  assert.equal(localState?.exportDirectory, join(cache, 'exported'));
+  assert.equal(typeof localState?.bridgePid, 'number');
+  assert.equal(typeof localState?.launcherPid, 'number');
+  const token = localState.token;
   const activeProject = {
-    name: health.project.split('/').pop(),
+    name: health.projectName,
     url: `http://localhost:${health.port}`,
-    token: health.token,
   };
-  if (activeProject.name !== root.split('/').pop() || activeProject.url !== `http://localhost:${port}` || activeProject.token !== token) {
+  if (activeProject.name !== basename(root) || activeProject.url !== `http://localhost:${port}`) {
     throw new Error('Health response could not produce the active project connection.');
   }
-  const manualConnection = { url: `http://localhost:${port}`, token };
-  if (manualConnection.url !== activeProject.url || manualConnection.token !== activeProject.token) {
-    throw new Error('Active and manual connection values should match the running bridge.');
+  const manualConnection = { url: `http://localhost:${port}` };
+  assert.equal(manualConnection.url, activeProject.url, 'Manual fallback only needs the local server URL.');
+  const origin = manualConnection.url;
+  const sessionResponse = await fetch(`${origin}/session`, { headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin' } });
+  assert.equal(sessionResponse.status, 200);
+  assert.equal(sessionResponse.headers.get('access-control-allow-origin'), null, 'The token endpoint must not enable CORS.');
+  assert.equal((await sessionResponse.json()).token, token);
+  for (const headers of [
+    { Origin: 'https://attacker.example' },
+    { Origin: 'null' },
+    { 'Sec-Fetch-Site': 'cross-site' },
+  ]) {
+    const response = await fetch(`${origin}/session`, { headers });
+    assert.equal(response.status, 403, 'Cross-origin session access must be rejected.');
   }
-  const forbidden = await fetch(`http://localhost:${port}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const uiResponse = await fetch(`${origin}/plugin-ui`);
+  assert.equal(uiResponse.status, 200);
+  assert.equal(uiResponse.headers.get('access-control-allow-origin'), null);
+  assert.match(uiResponse.headers.get('content-security-policy') ?? '', /frame-ancestors[^;]*https:\/\/www\.figma\.com/);
+  assert.equal(await uiResponse.text(), ui, 'The bridge must serve only the bundled plugin UI.');
+  const hiddenRoute = await fetch(`${origin}/../package.json`);
+  assert.notEqual(hiddenRoute.status, 200, 'The helper must not expose arbitrary project files.');
+
+  const wrongHost = await new Promise((resolve, reject) => {
+    const socket = createConnection({ host: 'localhost', port }, () => {
+      socket.write(`GET /session HTTP/1.1\r\nHost: attacker.example:${port}\r\nOrigin: ${origin}\r\nConnection: close\r\n\r\n`);
+    });
+    let response = '';
+    socket.setTimeout(2000, () => { socket.destroy(); reject(new Error('Host validation request timed out.')); });
+    socket.on('data', (chunk) => { response += chunk.toString(); });
+    socket.on('end', () => resolve(response));
+    socket.on('error', reject);
+  });
+  assert.match(wrongHost, /^HTTP\/1\.1 403/);
+
+  const forbidden = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   if (forbidden.status !== 403) throw new Error(`Unauthenticated export was not rejected: ${forbidden.status}`);
-  const saved = await fetch(`${manualConnection.url}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': manualConnection.token }, body: JSON.stringify({ filename: 'test.json', payload: { ok: true } }) });
+  const wrongOrigin = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token, Origin: 'https://attacker.example' }, body: JSON.stringify({ filename: 'wrong-origin.json', payload: { ok: true } }) });
+  assert.equal(wrongOrigin.status, 403);
+  assert.equal(wrongOrigin.headers.get('access-control-allow-origin'), null);
+  assert.equal(statSync(join(cache, 'exported')).isDirectory(), true);
+  const preflight = await fetch(`${origin}/export`, { method: 'OPTIONS' });
+  assert.equal(preflight.headers.get('access-control-allow-origin'), null, 'Only /health may allow cross-origin requests.');
+  const wrongShutdown = await fetch(`${origin}/shutdown`, {
+    method: 'POST', headers: { 'X-Figma-Mcp-Token': token, Origin: 'https://attacker.example' },
+  });
+  assert.equal(wrongShutdown.status, 403);
+  assert.equal(wrongShutdown.headers.get('access-control-allow-origin'), null);
+
+  const filesBeforeOversize = readdirSync(join(cache, 'exported')).sort();
+  const oversizeResponse = await new Promise((resolve, reject) => {
+    const socket = createConnection({ host: 'localhost', port }, () => {
+      socket.write(`POST /export HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Type: application/json\r\nX-Figma-Mcp-Token: ${token}\r\nContent-Length: ${128 * 1024 * 1024 + 1}\r\nConnection: close\r\n\r\n`);
+    });
+    let response = '';
+    socket.setTimeout(3000, () => { socket.destroy(); reject(new Error('Oversize request was not rejected before reading its body.')); });
+    socket.on('data', (chunk) => {
+      response += chunk.toString();
+      if (/^HTTP\/1\.1 413/m.test(response)) { socket.destroy(); resolve(response); }
+    });
+    socket.on('error', (error) => { if (error.code !== 'ECONNRESET') reject(error); });
+  });
+  assert.match(oversizeResponse, /^HTTP\/1\.1 413/m);
+  assert.deepEqual(readdirSync(join(cache, 'exported')).sort(), filesBeforeOversize, 'Oversize request must not write files.');
+
+  const saved = await fetch(`${manualConnection.url}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token }, body: JSON.stringify({ filename: 'test.json', payload: { ok: true } }) });
   if (saved.status !== 201) throw new Error(`Export endpoint failed: ${await saved.text()}`);
   if (JSON.parse(readFileSync(join(cache, 'exported', 'test.json'), 'utf8')).ok !== true) throw new Error('Export file content was incorrect.');
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=';
@@ -100,7 +171,7 @@ try {
     if (response.status !== 201 || !readFileSync(join(cache, 'assets', 'image-photo.png')).equals(bytes)) throw new Error('Raster image was not overwritten.');
   }
   if (!statSync(join(cache, 'exported', 'images-2.json')).isFile()) throw new Error('Repeated image export did not preserve its earlier frame file.');
-  console.log('Bridge startup, protected frame/PNG numbering, SVG and image replacement, and asset references passed.');
+  console.log('Bridge startup, redacted discovery, same-origin session/UI, protected exports, size limits, PNG numbering, SVG and image replacement passed.');
 } finally {
   child.kill();
   rmSync(root, { recursive: true, force: true });

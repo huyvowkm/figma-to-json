@@ -1,9 +1,11 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { removeRegistration } from './registration.mjs';
-import { removeBridgeState, writeBridgeState } from './bridge-state.mjs';
+import { readBridgeState, removeBridgeState, writeBridgeState } from './bridge-state.mjs';
+import { readLimitedBody } from './read-limited-body.mjs';
 
 let registration;
 process.on('message', (message) => {
@@ -20,10 +22,21 @@ const token = randomBytes(24).toString('hex');
 const instanceId = randomBytes(16).toString('hex');
 const startedAt = new Date().toISOString();
 const preferredPort = Number(process.env.FIGMA_MCP_PORT ?? 3847);
-const send = (res, status, body) => {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, X-Figma-Mcp-Token' });
+const pluginUi = readFileSync(fileURLToPath(new URL('../exporter/ui.html', import.meta.url)), 'utf8');
+const send = (res, status, body, headers = {}) => {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
   res.end(JSON.stringify(body));
 };
+const localOrigin = () => `http://localhost:${bridge.address()?.port}`;
+const localHost = () => `localhost:${bridge.address()?.port}`;
+function isLocalRequest(req) {
+  const host = req.headers.host;
+  const origin = req.headers.origin;
+  const site = req.headers['sec-fetch-site'];
+  return (!host || host.toLowerCase() === localHost())
+    && (origin === undefined || origin === localOrigin())
+    && (site === undefined || site === 'same-origin');
+}
 function writeUniqueJson(filename, payload, preview) {
   const outputDir = join(cache, 'exported');
   const base = filename.slice(0, -'.json'.length);
@@ -62,14 +75,46 @@ function writeAssets(assets) {
   return saved;
 }
 const bridge = http.createServer((req, res) => {
-  if (req.method === 'OPTIONS') return send(res, 204, {});
-  if (req.method === 'GET' && req.url === '/health') return send(res, 200, {
-    project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port, token,
-    instanceId, startedAt, pid: process.pid, launcherPid: process.ppid,
-    server: registration?.server, supportsShutdown: true,
-  });
-  if (req.method === 'POST' && req.url === '/shutdown') {
-    if (req.headers['x-figma-mcp-token'] !== token) return send(res, 403, { error: 'Forbidden' });
+  const path = req.url?.split('?')[0];
+  if (req.method === 'OPTIONS' && path === '/health') {
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET' });
+    res.end();
+    return;
+  }
+  if (req.method === 'GET' && path === '/health') return send(res, 200, {
+    projectName: basename(resolve(root)),
+    exportDirectoryName: basename(join(cache, 'exported')),
+    port: bridge.address()?.port,
+    instanceId,
+    supportsShutdown: true,
+  }, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+  if (req.method === 'GET' && path === '/plugin-ui') {
+    if (req.headers.host && req.headers.host.toLowerCase() !== localHost()) {
+      req.resume();
+      return send(res, 403, { error: 'Forbidden' });
+    }
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors https://www.figma.com; base-uri 'none'; form-action 'none'",
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    res.end(pluginUi);
+    return;
+  }
+  if (req.method === 'GET' && path === '/session') {
+    if (!isLocalRequest(req)) {
+      req.resume();
+      return send(res, 403, { error: 'Forbidden' });
+    }
+    return send(res, 200, { token }, { 'Cache-Control': 'no-store' });
+  }
+  if (req.method === 'POST' && path === '/shutdown') {
+    if (!isLocalRequest(req) || req.headers['x-figma-mcp-token'] !== token) {
+      req.resume();
+      return send(res, 403, { error: 'Forbidden' });
+    }
     res.once('finish', () => setImmediate(() => {
       bridge.close(() => process.exit(0));
       bridge.closeIdleConnections();
@@ -77,29 +122,54 @@ const bridge = http.createServer((req, res) => {
     send(res, 200, { stopping: true });
     return;
   }
-  if (req.method !== 'POST' || req.url !== '/export' || req.headers['x-figma-mcp-token'] !== token) return send(res, 403, { error: 'Forbidden' });
-  let raw = ''; req.on('data', (chunk) => raw += chunk); req.on('end', () => {
-    try {
-      const { filename, payload, assets = [], preview } = JSON.parse(raw);
-      if (!/^[a-z0-9-]+\.json$/i.test(filename)) throw new Error('Invalid filename');
-      let previewBytes;
-      if (preview !== undefined) {
-        if (!preview || typeof preview.base64 !== 'string') throw new Error('Invalid preview');
-        previewBytes = Buffer.from(preview.base64, 'base64');
-        if (previewBytes.toString('base64') !== preview.base64 || !previewBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('Invalid PNG preview');
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Preview requires an object payload');
-      }
-      const savedAssets = writeAssets(assets);
-      const saved = writeUniqueJson(filename, payload, previewBytes);
-      send(res, 201, { ...saved, assets: savedAssets });
-    } catch (error) { send(res, 400, { error: String(error) }); }
-  });
+  if (req.method === 'POST' && path === '/export') {
+    if (!isLocalRequest(req) || req.headers['x-figma-mcp-token'] !== token) {
+      req.resume();
+      return send(res, 403, { error: 'Forbidden' });
+    }
+    readLimitedBody(req).then((raw) => {
+      try {
+        const { filename, payload, assets = [], preview } = JSON.parse(raw);
+        if (!/^[a-z0-9-]+\.json$/i.test(filename)) throw new Error('Invalid filename');
+        let previewBytes;
+        if (preview !== undefined) {
+          if (!preview || typeof preview.base64 !== 'string') throw new Error('Invalid preview');
+          previewBytes = Buffer.from(preview.base64, 'base64');
+          if (previewBytes.toString('base64') !== preview.base64 || !previewBytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('Invalid PNG preview');
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Preview requires an object payload');
+        }
+        const savedAssets = writeAssets(assets);
+        const saved = writeUniqueJson(filename, payload, previewBytes);
+        send(res, 201, { ...saved, assets: savedAssets });
+      } catch (error) { send(res, 400, { error: String(error) }); }
+    }).catch((error) => {
+      if (error.code === 'PAYLOAD_TOO_LARGE') return send(res, 413, { error: error.message });
+      send(res, 400, { error: String(error) });
+    });
+    return;
+  }
+  req.resume();
+  send(res, 404, { error: 'Not found' });
 });
+function privateState() {
+  return {
+    token,
+    instanceId,
+    project: resolve(root),
+    exportDirectory: resolve(join(cache, 'exported')),
+    port: bridge.address()?.port,
+    bridgePid: process.pid,
+    launcherPid: process.ppid,
+    startedAt,
+    server: registration?.server,
+    supportsShutdown: true,
+  };
+}
 bridge.once('listening', () => {
-  writeBridgeState({ token, instanceId });
+  writeBridgeState(privateState());
   process.once('exit', () => removeBridgeState(instanceId));
   process.send?.({ type: 'ready', port: bridge.address().port, pid: process.pid, instanceId, startedAt });
-  console.log(`Figma bridge ready: http://localhost:${bridge.address().port}\nToken: ${token}\nExport folder: ${join(cache, 'exported')}`);
+  console.log(`Figma bridge ready: http://localhost:${bridge.address().port}\nExport folder: ${join(cache, 'exported')}`);
 });
 function listen(port) {
   bridge.once('error', async (error) => {
@@ -108,12 +178,15 @@ function listen(port) {
         const response = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(500) });
         if (response.ok) {
           const existing = await response.json();
-          if (resolve(existing.project) === resolve(root)) {
-            if (resolve(existing.exportDirectory) === resolve(join(cache, 'exported'))) {
+          const existingState = typeof existing.instanceId === 'string' ? readBridgeState(existing.instanceId) : null;
+          const existingProject = existingState?.project ?? existing.project;
+          const existingExportDirectory = existingState?.exportDirectory ?? existing.exportDirectory;
+          if (typeof existingProject === 'string' && resolve(existingProject) === resolve(root)) {
+            if (typeof existingExportDirectory === 'string' && resolve(existingExportDirectory) === resolve(join(cache, 'exported'))) {
               console.log(`Figma bridge already running: http://localhost:${port}\nExport folder: ${join(cache, 'exported')}`);
               process.exit(0);
             }
-            console.error(`A bridge for this project is already running at http://localhost:${port} with a different export folder (${existing.exportDirectory}). Stop it before restarting this helper.`);
+            console.error(`A bridge for this project is already running at http://localhost:${port} with a different export folder (${existingExportDirectory}). Stop it before restarting this helper.`);
             process.exit(1);
           }
         }

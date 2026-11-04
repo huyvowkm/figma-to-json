@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readBridgeState } from '../bin/bridge-state.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'figma-port-retry-'));
 const cache = join(root, '.figma-cache');
@@ -37,15 +38,17 @@ try {
   assert.equal(ready.length, 1, 'Port retries must print exactly one ready message');
   const port = Number(ready[0][1]);
   assert.notEqual(port, 3847, 'The bridge must skip the occupied port');
-  assert.equal((output.match(/Token:/g) || []).length, 1);
+  assert.equal((output.match(/Token:/g) || []).length, 0);
   assert.equal((output.match(/Export folder:/g) || []).length, 1);
-  const token = output.match(/Token: ([a-f0-9]+)/)?.[1];
   const health = await fetch(`http://localhost:${port}/health`).then((response) => response.json());
   assert.equal(health.port, port);
-  assert.equal(health.project, root);
-  assert.equal(health.exportDirectory, join(cache, 'exported'));
-  assert.equal(health.token, token, 'Active-folder discovery returns the connection token');
-  console.log('Occupied-port retry reports one accurate URL, token, and export folder.');
+  assert.equal(health.projectName, basename(root));
+  assert.equal(health.exportDirectoryName, 'exported');
+  assert.equal(health.token, undefined);
+  assert.equal(health.project, undefined);
+  assert.equal(health.exportDirectory, undefined);
+  assert.equal(typeof readBridgeState(health.instanceId)?.token, 'string');
+  console.log('Occupied-port retry reports one accurate URL and redacted discovery metadata.');
 } finally {
   const stopped = once(child, 'close');
   child.kill();

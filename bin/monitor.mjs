@@ -20,8 +20,15 @@ async function probe(port) {
     const response = await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(700) });
     if (!response.ok) return { state: 'unknown' };
     const health = await response.json();
-    if (typeof health.project !== 'string' || typeof health.exportDirectory !== 'string' || health.port !== port) return { state: 'unknown' };
-    return { state: 'running', health };
+    if (typeof health.instanceId !== 'string' || health.port !== port) return { state: 'unknown' };
+    let localState;
+    try { localState = readBridgeState(health.instanceId); }
+    catch { return { state: 'unknown' }; }
+    if (!localState || localState.instanceId !== health.instanceId) return { state: 'unknown' };
+    const project = localState.project ?? health.project;
+    const exportDirectory = localState.exportDirectory ?? health.exportDirectory;
+    if (typeof project !== 'string' || typeof exportDirectory !== 'string') return { state: 'unknown' };
+    return { state: 'running', health, localState, project, exportDirectory };
   } catch (error) {
     return { state: error.cause?.code === 'ECONNREFUSED' ? 'closed' : 'unknown' };
   }
@@ -57,12 +64,13 @@ export async function serverStatus() {
     const cacheDir = resolve(entry.transport.env.FIGMA_CACHE_ROOT);
     rows.set(entry.name, { ...previous, name: entry.name, project: previous?.project ?? cacheDir.replace(/[\\/]\.figma-cache$/, ''), cacheDir, entry });
   }
-  for (const [port, { health }] of probes) {
+  for (const [port, { health, localState, project, exportDirectory }] of probes) {
     if (!health) continue;
-    const entry = configured.find((item) => resolve(item.transport.env.FIGMA_CACHE_ROOT, 'exported') === resolve(health.exportDirectory));
-    const name = entry?.name ?? health.server ?? serverName(resolve(health.project));
-    rows.set(name, { ...rows.get(name), name, project: health.project, cacheDir: resolve(health.exportDirectory, '..'),
-      port, bridgePid: health.pid, launcherPid: health.launcherPid, instanceId: health.instanceId, startedAt: health.startedAt, healthy: true });
+    const entry = configured.find((item) => resolve(item.transport.env.FIGMA_CACHE_ROOT, 'exported') === resolve(exportDirectory));
+    const name = entry?.name ?? localState.server ?? health.server ?? serverName(resolve(project));
+    rows.set(name, { ...rows.get(name), name, project, cacheDir: resolve(exportDirectory, '..'),
+      port, bridgePid: localState.bridgePid ?? health.pid, launcherPid: localState.launcherPid ?? health.launcherPid,
+      instanceId: health.instanceId, startedAt: localState.startedAt ?? health.startedAt, healthy: true });
   }
   return await Promise.all([...rows.values()].sort((a, b) => a.name.localeCompare(b.name)).map(async (row) => {
     const check = probes.get(row.port);
@@ -86,13 +94,12 @@ export async function stopServer(name, rows) {
   const row = rows.find((item) => item.name === name);
   if (!row) throw new Error(`Unknown server: ${name}. Run figma-mcp status to list names.`);
   if (row.state !== 'running') throw new Error(`${name} is ${row.state}; no running bridge was verified.`);
-  const { health } = await probe(row.port);
-  if (!health || resolve(health.project) !== resolve(row.project) || resolve(health.exportDirectory) !== resolve(row.cacheDir, 'exported') || health.instanceId !== row.instanceId) {
+  const { health, localState, project, exportDirectory } = await probe(row.port);
+  if (!health || !localState || resolve(project) !== resolve(row.project) || resolve(exportDirectory) !== resolve(row.cacheDir, 'exported') || health.instanceId !== row.instanceId) {
     throw new Error(`${name} changed since the last refresh. Refresh before stopping it.`);
   }
   if (!health.supportsShutdown) throw new Error(`${name} uses an older bridge. Stop it in its original terminal and restart the updated launcher.`);
-  const localState = readBridgeState(health.instanceId);
-  const token = localState?.token ?? health.token;
+  const token = localState.token;
   if (!token) throw new Error(`${name} has no local shutdown token. Stop it in its original terminal and restart the helper.`);
   if (localState && localState.instanceId !== health.instanceId) throw new Error(`${name} local state changed since the last refresh. Refresh before stopping it.`);
   const response = await fetch(`http://localhost:${row.port}/shutdown`, {

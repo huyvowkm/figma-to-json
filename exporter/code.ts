@@ -1,8 +1,59 @@
-figma.showUI(__html__, {
+const uiOptions = {
   width: 440,
   height: 480,
   themeColors: true,
-});
+};
+let activeUiOrigin: string | undefined;
+let navigationTimeout: ReturnType<typeof setTimeout> | undefined;
+let navigationSequence = 0;
+let pendingConnectionError: string | undefined;
+
+function postToUi(message: Record<string, unknown>): void {
+  figma.ui.postMessage(message, activeUiOrigin ? { origin: activeUiOrigin } : undefined);
+}
+
+function localBridgeOrigin(value: string | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^http:\/\/localhost:(\d+)\/?$/i.exec(value.trim());
+  if (!match) return null;
+  const port = Number(match[1]);
+  if (!Number.isInteger(port) || port < 3847 || port > 3867) return null;
+  return 'http://localhost:' + port;
+}
+
+function showBundledUiError(error: string): void {
+  navigationSequence++;
+  if (navigationTimeout !== undefined) clearTimeout(navigationTimeout);
+  navigationTimeout = undefined;
+  activeUiOrigin = undefined;
+  pendingConnectionError = error;
+  figma.showUI(__html__, uiOptions);
+}
+
+function connectToBridge(value: string | undefined): void {
+  const origin = localBridgeOrigin(value);
+  if (!origin) {
+    postToUi({ type: 'connection-error', error: 'Use http://localhost with a port from 3847 to 3867.' });
+    return;
+  }
+  if (!figma.pluginId) {
+    postToUi({ type: 'connection-error', error: 'This plugin needs a Figma-assigned plugin ID before local folder saving can connect. Download mode is still available.' });
+    return;
+  }
+
+  const sequence = ++navigationSequence;
+  if (navigationTimeout !== undefined) clearTimeout(navigationTimeout);
+  activeUiOrigin = origin;
+  const pluginUiUrl = origin + '/plugin-ui?pluginId=' + encodeURIComponent(figma.pluginId);
+  const redirect = '<script>window.location.href=' + JSON.stringify(pluginUiUrl) + ';</script>';
+  figma.showUI(redirect, uiOptions);
+  navigationTimeout = setTimeout(() => {
+    if (sequence !== navigationSequence) return;
+    showBundledUiError('The local connection screen did not load. Start the helper and refresh the folder list.');
+  }, 10000);
+}
+
+figma.showUI(__html__, uiOptions);
 
 const exportableNodeTypes = new Set(['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE']);
 type ConnectionMode = 'local-server' | 'download';
@@ -15,7 +66,7 @@ function getExportableSelection(): SceneNode[] {
 
 function postSelectionSummary(): void {
   const exportableNodes = getExportableSelection();
-  figma.ui.postMessage({
+  postToUi({
     type: 'selection-summary',
     selectedCount: figma.currentPage.selection.length,
     exportableCount: exportableNodes.length,
@@ -27,22 +78,34 @@ figma.on('selectionchange', postSelectionSummary);
 
 figma.ui.onmessage = async (message: {
   type?: string;
-  bridge?: string;
-  token?: string;
+  url?: string;
   exportMode?: 'visible-only' | 'no-filter';
   includeAssets?: boolean;
   includePreview?: boolean;
   connectionMode?: ConnectionMode;
 }) => {
+  if (message.type === 'connect-to-bridge') {
+    connectToBridge(message.url);
+    return;
+  }
+  if (message.type === 'local-ui-ready') {
+    if (navigationTimeout !== undefined) clearTimeout(navigationTimeout);
+    navigationTimeout = undefined;
+    return;
+  }
   if (message.type === 'get-connection-mode') {
     try {
       const savedMode = await figma.clientStorage.getAsync('connection-mode');
-      figma.ui.postMessage({
+      postToUi({
         type: 'connection-mode',
         connectionMode: savedMode === 'download' ? 'download' : 'local-server',
       });
     } catch {
-      figma.ui.postMessage({ type: 'connection-mode', connectionMode: 'local-server' });
+      postToUi({ type: 'connection-mode', connectionMode: 'local-server' });
+    }
+    if (pendingConnectionError) {
+      postToUi({ type: 'connection-error', error: pendingConnectionError });
+      pendingConnectionError = undefined;
     }
     return;
   }
@@ -66,25 +129,36 @@ figma.ui.onmessage = async (message: {
     const errors: string[] = [];
     const projects = (await Promise.all(Array.from({ length: 21 }, async (_, index) => {
       const port = 3847 + index;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const response = await Promise.race([
-          fetch(`http://localhost:${port}/health`),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timed out')), 800)),
+          fetch('http://localhost:' + port + '/health', { cache: 'no-store' }),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Timed out')), 800); }),
         ]);
-        return response.ok ? await response.json() : null;
+        if (!response.ok) return null;
+        const health = await response.json();
+        if (!isRecord(health) || health.port !== port
+          || typeof health.projectName !== 'string' || typeof health.exportDirectoryName !== 'string') return null;
+        return {
+          port,
+          projectName: health.projectName,
+          exportDirectoryName: health.exportDirectoryName,
+          supportsShutdown: health.supportsShutdown === true,
+        };
       } catch (error) { if (port === 3847) errors.push(errorMessage(error)); return null; }
+      finally { if (timer !== undefined) clearTimeout(timer); }
     }))).filter(Boolean);
     figma.notify(projects.length ? `Found ${projects.length} export folder${projects.length === 1 ? '' : 's'}.` : 'No active export folder was found.');
-    figma.ui.postMessage({ type: 'bridge-results', projects, errors });
+    postToUi({ type: 'bridge-results', projects, errors });
     return;
   }
   if (message.type !== 'export-selection') return;
 
   const connectionMode: ConnectionMode = message.connectionMode === 'download' ? 'download' : 'local-server';
-  if (connectionMode === 'local-server' && (!message.bridge || !message.token)) {
-    figma.ui.postMessage({
+  if (connectionMode === 'local-server' && !activeUiOrigin) {
+    postToUi({
       type: 'export-error',
-      error: 'Select a project folder before exporting to a local folder.',
+      error: 'Select an active local folder before exporting to a project folder.',
       connectionMode,
     });
     return;
@@ -101,12 +175,10 @@ figma.ui.onmessage = async (message: {
       ? 'Select one or more visible frames, components, component sets, or instances first, or choose No filter.'
       : 'Select one or more frames, components, component sets, or instances first.';
     figma.notify(error);
-    figma.ui.postMessage({ type: 'export-error', error, connectionMode });
+    postToUi({ type: 'export-error', error, connectionMode });
     return;
   }
 
-  const savedFiles: string[] = [];
-  const savedAssets = new Set<string>();
   try {
     const exports = await Promise.all(nodes.map(async (node) => {
       const warnings: ExportWarning[] = [];
@@ -187,12 +259,12 @@ figma.ui.onmessage = async (message: {
           : `${entry.filename.slice(0, -'.json'.length)}-${count}.json`;
         if (entry.preview && entry.payload.preview) {
           entry.payload.preview.file = `${filename.slice(0, -5)}.png`;
-          figma.ui.postMessage({
+          postToUi({
             type: 'download-asset', filename: entry.payload.preview.file,
             mimeType: 'image/png', base64: entry.preview.base64,
           });
         }
-        figma.ui.postMessage({
+        postToUi({
           type: 'download-file',
           filename,
           content: JSON.stringify(entry.payload, null, 2),
@@ -200,36 +272,28 @@ figma.ui.onmessage = async (message: {
         entry.assets.forEach((asset) => assets.set(asset.filename, asset));
       }
       for (const asset of assets.values()) {
-        figma.ui.postMessage({
+        postToUi({
           type: 'download-asset',
           filename: asset.filename,
           mimeType: asset.mimeType,
           base64: asset.base64,
         });
       }
-      figma.ui.postMessage({ type: 'download-complete', count: exports.length, assetCount: assets.size, previewCount: exports.filter((entry) => entry.preview).length, warnings, skippedRenders, connectionMode });
+      postToUi({ type: 'download-complete', count: exports.length, assetCount: assets.size, previewCount: exports.filter((entry) => entry.preview).length, warnings, skippedRenders, connectionMode });
       return;
     }
 
-    const bridgeUrl = message.bridge!;
-    const bridgeToken = message.token!;
-    for (const entry of exports) {
-      const result = await sendToBridge(bridgeUrl, bridgeToken,
-        JSON.stringify({ filename: entry.filename, payload: entry.payload, assets: entry.assets, preview: entry.preview }));
-      if (!isRecord(result) || typeof result.saved !== 'string') {
-        throw new Error(`Server ${bridgeUrl} did not confirm a saved filename. Check the helper terminal and export folder before retrying.`);
-      }
-      savedFiles.push(result.saved);
-      if (typeof result.preview === 'string') savedFiles.push(result.preview);
-      if (Array.isArray(result.assets)) {
-        result.assets.forEach((filename) => {
-          if (typeof filename === 'string') savedAssets.add(filename);
-        });
-      }
-    }
-    figma.ui.postMessage({ type: 'export-complete', count: exports.length, files: savedFiles, assets: [...savedAssets], warnings, skippedRenders, includeAssets, connectionMode });
+    postToUi({
+      type: 'save-exports',
+      count: exports.length,
+      entries: exports.map(({ filename, payload, assets, preview }) => ({ filename, payload, assets, preview })),
+      warnings,
+      skippedRenders,
+      includeAssets,
+      connectionMode,
+    });
   } catch (error) {
-    figma.ui.postMessage({ type: 'export-error', error: errorMessage(error), files: savedFiles, assets: [...savedAssets], includeAssets, connectionMode });
+    postToUi({ type: 'export-error', error: errorMessage(error), includeAssets, connectionMode });
   }
 };
 
@@ -244,38 +308,6 @@ function errorMessage(error: unknown): string {
     if (details.length) return details.join(': ');
   }
   return 'No error details were provided.';
-}
-
-async function sendToBridge(url: string, token: string, body: string): Promise<unknown> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      (async () => {
-        let response: FetchResponse;
-        try {
-          response = await fetch(`${url}/export`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token }, body,
-          });
-        } catch (error) {
-          throw new Error(`Cannot reach the local server at ${url}. It may have stopped or the connection may be blocked. Start the helper in your target folder, click Refresh, and select the server again. Details: ${errorMessage(error)}`);
-        }
-        if (!response.ok) {
-          if (response.status === 403) throw new Error(`Server ${url} rejected the connection token (HTTP 403). If the helper was restarted, click Refresh and select the server again, or update the manual token.`);
-          const text = await response.text();
-          let detail = text;
-          try { detail = errorMessage(JSON.parse(text)); } catch {}
-          throw new Error(`Server ${url} could not save the export (HTTP ${response.status}). ${detail || 'Check the helper terminal for details.'}`);
-        }
-        try { return await response.json(); }
-        catch { throw new Error(`Server ${url} returned an invalid response. Check the helper terminal and export folder before retrying.`); }
-      })(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Server ${url} did not respond within 15 seconds. Check the helper terminal. Files may already have been saved; check the export folder before retrying.`)), 15000);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 }
 
 function removeInvisibleNodes(value: unknown): unknown {
