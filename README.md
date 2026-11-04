@@ -15,25 +15,13 @@ npm run build --prefix exporter
 
 In Figma Desktop, import `exporter/manifest.json` from **Plugins → Development → Import plugin from manifest…**. Select a frame and run **Figma to JSON**.
 
-## Export
+## Export settings
 
-- **Download JSON:** Choose **Settings → Download JSON**. Files download through your browser; no local server is needed.
-- **Save to a project folder:** Start the local bridge from this repository:
+- **Export filter:** **Visible only** omits hidden content; **No filter** includes it.
+- **Content:** Choose **JSON only** or **JSON + assets** to include detected images and SVG icons.
+- **Frame preview:** Choose **None** or **PNG preview** to save a PNG alongside each JSON file.
 
-  ```sh
-  node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache
-  ```
+## Choose where to save exports
 
-  In the plugin, choose **Settings → Save to project folder**, select the active folder, and export. Keep the bridge running. JSON goes in `.figma-cache/exported/`; assets go in `.figma-cache/assets/`.
-
-## Optional: read exports with Codex
-
-Codex is not needed to export. To let Codex read the local cache, build and start its MCP server instead of `bin/bridge.mjs`:
-
-```sh
-npm ci --prefix server
-npm run build --prefix server
-node bin/figma-mcp.mjs --output-dir /path/to/project
-```
-
-The Codex skill is in `.codex/skills/figma-cache/SKILL.md`.
+- **Download JSON:** In **Settings**, choose **Download JSON**. Select frames or components, set the export options, click **Prepare downloads**, then click each generated link. No local server is needed.
+- **Save to project folder:** Run `node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache` from this repository and keep it running. In **Settings**, choose **Save to project folder**, select the active folder, then click **Export selected**. JSON is saved in `.figma-cache/exported/`; assets are saved in `.figma-cache/assets/`.
