@@ -42,7 +42,7 @@ try {
     if (!statSync(join(cache, folder)).isDirectory()) throw new Error(`Startup did not create ${folder}.`);
   }
   const healthResponse = await fetch(`http://localhost:${port}/health`);
-  assert.equal(healthResponse.headers.get('access-control-allow-origin'), '*', 'Only discovery metadata needs wildcard CORS.');
+  assert.equal(healthResponse.headers.get('access-control-allow-origin'), '*', 'Discovery metadata must remain readable by the plugin.');
   assert.equal(healthResponse.headers.get('cache-control'), 'no-store', 'Discovery must report the active helpers on each run.');
   const health = await healthResponse.json();
   assert.deepEqual(Object.keys(health).sort(), ['exportDirectoryName', 'instanceId', 'port', 'projectName', 'supportsShutdown'].sort());
@@ -67,23 +67,18 @@ try {
   const manualConnection = { url: `http://localhost:${port}` };
   assert.equal(manualConnection.url, activeProject.url, 'Manual fallback only needs the local server URL.');
   const origin = manualConnection.url;
-  const sessionResponse = await fetch(`${origin}/session`, { headers: { Origin: origin, 'Sec-Fetch-Site': 'same-origin' } });
+  const sessionResponse = await fetch(`${origin}/session`, { headers: { Origin: 'null' } });
   assert.equal(sessionResponse.status, 200);
-  assert.equal(sessionResponse.headers.get('access-control-allow-origin'), null, 'The token endpoint must not enable CORS.');
+  assert.equal(sessionResponse.headers.get('access-control-allow-origin'), '*', 'The bundled Figma plugin flow requires wildcard CORS for its null origin.');
   assert.equal((await sessionResponse.json()).token, token);
-  for (const headers of [
-    { Origin: 'https://attacker.example' },
-    { Origin: 'null' },
-    { 'Sec-Fetch-Site': 'cross-site' },
-  ]) {
-    const response = await fetch(`${origin}/session`, { headers });
-    assert.equal(response.status, 403, 'Cross-origin session access must be rejected.');
-  }
+  const exposedSession = await fetch(`${origin}/session`, { headers: { Origin: 'https://attacker.example' } });
+  assert.equal(exposedSession.status, 200);
+  assert.equal(exposedSession.headers.get('access-control-allow-origin'), '*', 'The legacy flow exposes the local session to cross-origin pages.');
+  const sessionPreflight = await fetch(`${origin}/session`, { method: 'OPTIONS', headers: { Origin: 'null' } });
+  assert.equal(sessionPreflight.headers.get('access-control-allow-origin'), '*');
   const uiResponse = await fetch(`${origin}/plugin-ui`);
-  assert.equal(uiResponse.status, 200);
+  assert.equal(uiResponse.status, 404, 'The bundled UI stays in place; selection does not navigate to the bridge.');
   assert.equal(uiResponse.headers.get('access-control-allow-origin'), null);
-  assert.match(uiResponse.headers.get('content-security-policy') ?? '', /frame-ancestors[^;]*https:\/\/www\.figma\.com/);
-  assert.equal(await uiResponse.text(), ui, 'The bridge must serve only the bundled plugin UI.');
   const hiddenRoute = await fetch(`${origin}/../package.json`);
   assert.notEqual(hiddenRoute.status, 200, 'The helper must not expose arbitrary project files.');
 
@@ -101,12 +96,13 @@ try {
 
   const forbidden = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   if (forbidden.status !== 403) throw new Error(`Unauthenticated export was not rejected: ${forbidden.status}`);
-  const wrongOrigin = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token, Origin: 'https://attacker.example' }, body: JSON.stringify({ filename: 'wrong-origin.json', payload: { ok: true } }) });
-  assert.equal(wrongOrigin.status, 403);
-  assert.equal(wrongOrigin.headers.get('access-control-allow-origin'), null);
+  const crossOriginExport = await fetch(`${origin}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token, Origin: 'null' }, body: JSON.stringify({ filename: 'cross-origin.json', payload: { ok: true } }) });
+  assert.equal(crossOriginExport.status, 201);
+  assert.equal(crossOriginExport.headers.get('access-control-allow-origin'), '*');
   assert.equal(statSync(join(cache, 'exported')).isDirectory(), true);
-  const preflight = await fetch(`${origin}/export`, { method: 'OPTIONS' });
-  assert.equal(preflight.headers.get('access-control-allow-origin'), null, 'Only /health may allow cross-origin requests.');
+  const preflight = await fetch(`${origin}/export`, { method: 'OPTIONS', headers: { Origin: 'null', 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type,x-figma-mcp-token' } });
+  assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
+  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /x-figma-mcp-token/i);
   const wrongShutdown = await fetch(`${origin}/shutdown`, {
     method: 'POST', headers: { 'X-Figma-Mcp-Token': token, Origin: 'https://attacker.example' },
   });
@@ -171,7 +167,7 @@ try {
     if (response.status !== 201 || !readFileSync(join(cache, 'assets', 'image-photo.png')).equals(bytes)) throw new Error('Raster image was not overwritten.');
   }
   if (!statSync(join(cache, 'exported', 'images-2.json')).isFile()) throw new Error('Repeated image export did not preserve its earlier frame file.');
-  console.log('Bridge startup, redacted discovery, same-origin session/UI, protected exports, size limits, PNG numbering, SVG and image replacement passed.');
+  console.log('Bridge startup, redacted discovery, cross-origin Figma sessions/exports, protected shutdown, size limits, PNG numbering, SVG and image replacement passed.');
 } finally {
   child.kill();
   rmSync(root, { recursive: true, force: true });

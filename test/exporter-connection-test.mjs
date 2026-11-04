@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-function makeHarness(pluginId = 'test-plugin-id') {
+function makeHarness() {
   const messages = [];
   const uiCalls = [];
   const timers = new Map();
@@ -13,7 +13,6 @@ function makeHarness(pluginId = 'test-plugin-id') {
   const frame = { id: '1:1', name: 'Screen', type: 'FRAME', width: 200, height: 200, visible: true,
     resolvedVariableModes: {}, exportAsync: async () => ({ document: { id: '1:1', name: 'Screen', type: 'FRAME' } }) };
   const figma = {
-    ...(pluginId ? { pluginId } : {}),
     showUI: (html, options) => uiCalls.push({ html, options }),
     on() {}, notify() {},
     ui: { postMessage: (message, options) => messages.push({ message, options }) },
@@ -29,14 +28,18 @@ function makeHarness(pluginId = 'test-plugin-id') {
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout: (id) => timers.delete(id),
     fetch: async (url, options) => {
-      fetches.push(String(url));
+      const requestUrl = String(url);
+      fetches.push(requestUrl);
       fetchOptions.push(options);
-      const port = Number(String(url).match(/:(\d+)\/health$/)?.[1]);
+      const port = Number(requestUrl.match(/:(\d+)\/(?:health|session|export)$/)?.[1]);
       if (port !== 3847) return { ok: false, status: 404 };
-      return { ok: true, json: async () => ({
+      if (requestUrl.endsWith('/health')) return { ok: true, json: async () => ({
         port, instanceId: 'a'.repeat(32), projectName: 'checkout', exportDirectoryName: 'exported', supportsShutdown: true,
         token: 'must-not-leak', project: '/private/user/project', pid: 1234,
       }) };
+      if (requestUrl.endsWith('/session')) return { ok: true, json: async () => ({ token: 'session-secret' }) };
+      if (requestUrl.endsWith('/export')) return { ok: true, status: 201, json: async () => ({ saved: 'screen-visible-only.json', assets: [] }) };
+      return { ok: false, status: 404 };
     },
   });
   vm.runInContext(readFileSync(new URL('../exporter/code.js', import.meta.url), 'utf8'), context);
@@ -69,41 +72,22 @@ for (const url of [
 }
 
 await harness.figma.ui.onmessage({ type: 'connect-to-bridge', url: 'http://localhost:3847/' });
-assert.equal(harness.uiCalls.length, 2);
-assert.match(harness.uiCalls[1].html, /http:\/\/localhost:3847\/plugin-ui\?pluginId=test-plugin-id/);
-assert.equal(harness.timers.size, 1, 'A local UI load timeout provides a recovery path.');
-await harness.figma.ui.onmessage({ type: 'local-ui-ready' });
-assert.equal(harness.timers.size, 0);
+assert.equal(harness.uiCalls.length, 1, 'Selecting a helper must keep the existing plugin panel open.');
+assert.ok(harness.fetches.includes('http://localhost:3847/session'), 'Selecting a helper opens a session without requiring a plugin ID.');
+assert.equal(harness.messages.at(-1).message.type, 'connection-ready');
+assert.equal(harness.messages.at(-1).message.url, 'http://localhost:3847');
+assert.ok(!JSON.stringify(harness.messages).includes('session-secret'), 'The session token must stay out of plugin messages.');
 
 await harness.figma.ui.onmessage({ type: 'get-connection-mode' });
 assert.equal(harness.messages.at(-1).message.connectionMode, 'local-server');
-assert.equal(harness.messages.at(-1).options.origin, 'http://localhost:3847');
+assert.equal(harness.messages.at(-1).options, undefined);
 await harness.figma.ui.onmessage({ type: 'set-connection-mode', connectionMode: 'download' });
 assert.deepEqual([...harness.storage.entries()], [['connection-mode', 'download']]);
 
 await harness.figma.ui.onmessage({ type: 'export-selection', connectionMode: 'local-server' });
-const pendingSave = harness.messages.find(({ message }) => message.type === 'save-exports');
-assert.ok(pendingSave, 'The plugin sends export data to the selected local UI for same-origin saving.');
-assert.equal(pendingSave.options.origin, 'http://localhost:3847');
-assert.equal(pendingSave.message.entries[0].filename, 'screen-visible-only.json');
-assert.ok(!JSON.stringify(pendingSave).includes('token'));
-assert.ok(!JSON.stringify(pendingSave).includes('bridge'));
-assert.ok(!harness.fetches.some((url) => url.endsWith('/export')));
-
-const navigationTimeout = makeHarness();
-await navigationTimeout.figma.ui.onmessage({ type: 'connect-to-bridge', url: 'http://localhost:3847' });
-const pendingNavigation = [...navigationTimeout.timers.values()][0];
-pendingNavigation.callback();
-assert.equal(navigationTimeout.uiCalls.length, 3, 'A stalled local UI navigation returns to the bundled UI.');
-assert.equal(navigationTimeout.uiCalls.at(-1).html, '<div>bundled</div>');
-assert.equal(navigationTimeout.messages.some(({ message }) => message.type === 'connection-error'), false,
-  'The recovery message waits until the bundled UI is ready to receive it.');
-await navigationTimeout.figma.ui.onmessage({ type: 'get-connection-mode' });
-assert.match(navigationTimeout.messages.at(-1).message.error, /local connection screen did not load/i);
-assert.equal(navigationTimeout.messages.at(-1).options, undefined);
-
-const withoutPluginId = makeHarness('');
-await withoutPluginId.figma.ui.onmessage({ type: 'connect-to-bridge', url: 'http://localhost:3847' });
-assert.equal(withoutPluginId.uiCalls.length, 1, 'Without an assigned plugin ID, the plugin must stay on the bundled UI.');
-assert.match(withoutPluginId.messages.at(-1).message.error, /Figma-assigned plugin ID/i);
-console.log('Local helper discovery, URL validation, assigned-ID navigation, message origins, and token-free main-thread exports passed.');
+assert.ok(harness.fetches.includes('http://localhost:3847/export'), 'The main thread writes to the selected bridge.');
+const exportRequest = harness.fetchOptions.find((options, index) => harness.fetches[index].endsWith('/export'));
+assert.equal(exportRequest.headers['X-Figma-Mcp-Token'], 'session-secret');
+assert.equal(harness.messages.at(-1).message.type, 'export-complete');
+assert.ok(!JSON.stringify(harness.messages).includes('session-secret'));
+console.log('Per-run helper discovery, URL validation, in-panel server selection, no-ID connection, and main-thread exports passed.');

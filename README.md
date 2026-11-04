@@ -44,12 +44,11 @@ In Figma Desktop:
     node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache
     ```
 
-  - In **Settings**, choose **Save to project folder**. Each time the plugin runs, it scans for active local folders. Select the folder to connect; no token needs to be copied.
+  - In **Settings**, choose **Save to project folder**. Each time the plugin runs, it scans for active local folders. Click a folder to connect in the same panel; no token or plugin ID needs to be entered.
   - If the folder is not listed, open **Manual connection** and enter its local URL, such as `http://localhost:3847`. Only `http://localhost` on ports 3847–3867 is accepted.
   - Select frames or components, set the export options, and click **Export selected**.
   - Files are saved here:
     - JSON: `.figma-cache/exported/`
     - Assets: `.figma-cache/assets/`
-  - Local saving requires a Figma-assigned plugin ID for secure UI messaging. Until one is assigned to the plugin manifest, use **Download JSON**.
 
 See the [Privacy Policy](PRIVACY_POLICY.md) for data handling details.

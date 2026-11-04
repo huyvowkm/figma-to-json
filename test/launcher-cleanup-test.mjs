@@ -218,9 +218,6 @@ finally:
   }
   if (process.argv.includes('--with-bridge')) {
     copyFileSync(new URL('../bin/bridge.mjs', import.meta.url), join(bin, 'bridge.mjs'));
-    const exporter = join(root, 'exporter');
-    mkdirSync(exporter);
-    copyFileSync(new URL('../exporter/ui.html', import.meta.url), join(exporter, 'ui.html'));
     const folder = setup('real-bridge');
     const owner = await launch(folder);
     const duplicate = await launch(folder, 'duplicate');

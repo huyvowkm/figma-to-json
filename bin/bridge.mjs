@@ -1,8 +1,7 @@
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { removeRegistration } from './registration.mjs';
 import { readBridgeState, removeBridgeState, writeBridgeState } from './bridge-state.mjs';
 import { readLimitedBody } from './read-limited-body.mjs';
@@ -22,13 +21,21 @@ const token = randomBytes(24).toString('hex');
 const instanceId = randomBytes(16).toString('hex');
 const startedAt = new Date().toISOString();
 const preferredPort = Number(process.env.FIGMA_MCP_PORT ?? 3847);
-const pluginUi = readFileSync(fileURLToPath(new URL('../exporter/ui.html', import.meta.url)), 'utf8');
+const exportCorsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Figma-Mcp-Token',
+};
 const send = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
   res.end(JSON.stringify(body));
 };
 const localOrigin = () => `http://localhost:${bridge.address()?.port}`;
 const localHost = () => `localhost:${bridge.address()?.port}`;
+function isLocalHost(req) {
+  const host = req.headers.host;
+  return !host || host.toLowerCase() === localHost();
+}
 function isLocalRequest(req) {
   const host = req.headers.host;
   const origin = req.headers.origin;
@@ -81,6 +88,16 @@ const bridge = http.createServer((req, res) => {
     res.end();
     return;
   }
+  if (req.method === 'OPTIONS' && path === '/session') {
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET' });
+    res.end();
+    return;
+  }
+  if (req.method === 'OPTIONS' && path === '/export') {
+    res.writeHead(204, exportCorsHeaders);
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && path === '/health') return send(res, 200, {
     projectName: basename(resolve(root)),
     exportDirectoryName: basename(join(cache, 'exported')),
@@ -88,27 +105,12 @@ const bridge = http.createServer((req, res) => {
     instanceId,
     supportsShutdown: true,
   }, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
-  if (req.method === 'GET' && path === '/plugin-ui') {
-    if (req.headers.host && req.headers.host.toLowerCase() !== localHost()) {
-      req.resume();
-      return send(res, 403, { error: 'Forbidden' });
-    }
-    res.writeHead(200, {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors https://www.figma.com; base-uri 'none'; form-action 'none'",
-      'Cache-Control': 'no-store',
-      'Referrer-Policy': 'no-referrer',
-      'X-Content-Type-Options': 'nosniff',
-    });
-    res.end(pluginUi);
-    return;
-  }
   if (req.method === 'GET' && path === '/session') {
-    if (!isLocalRequest(req)) {
+    if (!isLocalHost(req)) {
       req.resume();
       return send(res, 403, { error: 'Forbidden' });
     }
-    return send(res, 200, { token }, { 'Cache-Control': 'no-store' });
+    return send(res, 200, { token }, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
   }
   if (req.method === 'POST' && path === '/shutdown') {
     if (!isLocalRequest(req) || req.headers['x-figma-mcp-token'] !== token) {
@@ -123,9 +125,9 @@ const bridge = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'POST' && path === '/export') {
-    if (!isLocalRequest(req) || req.headers['x-figma-mcp-token'] !== token) {
+    if (!isLocalHost(req) || req.headers['x-figma-mcp-token'] !== token) {
       req.resume();
-      return send(res, 403, { error: 'Forbidden' });
+      return send(res, 403, { error: 'Forbidden' }, exportCorsHeaders);
     }
     readLimitedBody(req).then((raw) => {
       try {
@@ -140,11 +142,11 @@ const bridge = http.createServer((req, res) => {
         }
         const savedAssets = writeAssets(assets);
         const saved = writeUniqueJson(filename, payload, previewBytes);
-        send(res, 201, { ...saved, assets: savedAssets });
-      } catch (error) { send(res, 400, { error: String(error) }); }
+        send(res, 201, { ...saved, assets: savedAssets }, exportCorsHeaders);
+      } catch (error) { send(res, 400, { error: String(error) }, exportCorsHeaders); }
     }).catch((error) => {
-      if (error.code === 'PAYLOAD_TOO_LARGE') return send(res, 413, { error: error.message });
-      send(res, 400, { error: String(error) });
+      if (error.code === 'PAYLOAD_TOO_LARGE') return send(res, 413, { error: error.message }, exportCorsHeaders);
+      send(res, 400, { error: String(error) }, exportCorsHeaders);
     });
     return;
   }

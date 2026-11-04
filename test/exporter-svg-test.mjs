@@ -4,8 +4,10 @@ import vm from 'node:vm';
 
 const messages = [];
 const rendered = [];
+const localWrites = [];
 let revision = 'black';
 let nextId = 1;
+let savedNumber = 0;
 const node = (type, name, width = 24, height = 24, children, extra = {}) => {
   const result = { id: `9:${nextId++}`, type, name, width, height, visible: true, exportSettings: [], resolvedVariableModes: {}, componentProperties: {}, ...extra };
   if (children) {
@@ -39,8 +41,23 @@ const blank = node('RECTANGLE', 'Border', 24, 24);
 const large = node('VECTOR', 'Illustration', 400, 400);
 const imageIcon = node('RECTANGLE', 'Icon/Photo', 24, 24, undefined, { fills: [{ type: 'IMAGE' }] });
 const root = node('FRAME', 'Screen', 400, 800, [button, named, standalone, explicit, primitiveIcon, hidden, keyboard, blank, large, imageIcon]);
-const figma = { pluginId: 'test-plugin-id', showUI() {}, on() {}, notify() {}, ui: { postMessage: (message) => messages.push(message) }, currentPage: { name: 'Page', selection: [root] } };
-const context = vm.createContext({ figma, __html__: '', console, Uint8Array, URL, setTimeout, clearTimeout });
+const figma = { showUI() {}, on() {}, notify() {}, ui: { postMessage: (message) => messages.push(message) }, currentPage: { name: 'Page', selection: [root] } };
+const context = vm.createContext({
+  figma, __html__: '', console, Uint8Array, URL, setTimeout, clearTimeout,
+  fetch: async (url, options = {}) => {
+    if (String(url).endsWith('/session')) return { ok: true, json: async () => ({ token: 'session-secret' }) };
+    if (String(url).endsWith('/export')) {
+      const entry = JSON.parse(options.body);
+      localWrites.push(entry);
+      savedNumber++;
+      return { ok: true, status: 201, json: async () => ({
+        saved: `${entry.filename.slice(0, -5)}-${savedNumber}.json`,
+        assets: entry.assets.map((asset) => asset.filename),
+      }) };
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  },
+});
 vm.runInContext(readFileSync(new URL('../exporter/code.js', import.meta.url), 'utf8'), context);
 const run = async (options = {}) => {
   messages.length = 0;
@@ -104,13 +121,13 @@ assert.equal(find(partial.figma.document, empty.id).svgAsset, undefined);
 assert.match(find(partial.figma.document, empty.id).svgExportError, /visible layers/);
 assert.equal(messages.find((message) => message.type === 'download-complete').warnings[0].nodeName, 'Empty asset');
 await figma.ui.onmessage({ type: 'connect-to-bridge', url: 'http://localhost:3847' });
-await figma.ui.onmessage({ type: 'local-ui-ready' });
+assert.equal(messages.at(-1).type, 'connection-ready', 'A local helper connects without requiring a Figma plugin ID.');
 messages.length = 0;
 await figma.ui.onmessage({ type: 'export-selection', connectionMode: 'local-server', includeAssets: true });
-const localSave = messages.find((message) => message.type === 'save-exports');
-assert.equal(localSave.entries[0].payload.warnings[0].nodeId, empty.id);
-assert.equal(localSave.warnings.length, 1);
-assert.ok(!JSON.stringify(localSave).includes('token'));
+const localComplete = messages.find((message) => message.type === 'export-complete');
+assert.equal(localWrites.at(-1).payload.warnings[0].nodeId, empty.id);
+assert.equal(localComplete.warnings.length, 1);
+assert.ok(!JSON.stringify(messages).includes('session-secret'), 'The token must stay out of UI messages.');
 assert.ok(!messages.some((message) => message.type === 'export-error'));
 figma.currentPage.selection = [empty];
 const noSvg = await run({ includeAssets: true });
@@ -135,9 +152,9 @@ assert.equal(find(clippedResult.figma.document, clippedIcon.id).svgAsset, undefi
 assert.equal(messages.find((message) => message.type === 'download-complete').skippedRenders.length, 1);
 messages.length = 0;
 await figma.ui.onmessage({ type: 'export-selection', connectionMode: 'local-server', includeAssets: true });
-const clippedSave = messages.find((message) => message.type === 'save-exports');
-assert.equal(clippedSave.entries[0].payload.skippedRenders[0].nodeId, clippedIcon.id);
-assert.equal(clippedSave.skippedRenders.length, 1);
+const clippedComplete = messages.find((message) => message.type === 'export-complete');
+assert.equal(localWrites.at(-1).payload.skippedRenders[0].nodeId, clippedIcon.id);
+assert.equal(clippedComplete.skippedRenders.length, 1);
 const unfilteredClipped = await run({ includeAssets: true, exportMode: 'no-filter' });
 assert.ok(rendered.includes(clippedIcon.id), 'No filter must still attempt requested clipped assets');
 assert.ok(unfilteredClipped.warnings.some((warning) => warning.nodeId === clippedIcon.id));

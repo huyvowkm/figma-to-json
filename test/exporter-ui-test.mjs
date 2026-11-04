@@ -62,38 +62,40 @@ assert.ok(bundled.parentMessages.some(({ message }) => message.pluginMessage?.ty
 assert.equal(bundled.parentMessages.some(({ message }) => message.pluginMessage?.type === 'scan-bridges'), false);
 await bundled.context.onmessage({ data: { pluginMessage: { type: 'connection-mode', connectionMode: 'local-server' } } });
 assert.ok(bundled.parentMessages.some(({ message }) => message.pluginMessage?.type === 'scan-bridges'), 'Local mode scans again whenever the UI starts.');
+await bundled.context.onmessage({ data: { pluginMessage: {
+  type: 'bridge-results', projects: [{ port: 3847, projectName: 'checkout', exportDirectoryName: 'exported' }],
+} } });
+await bundled.context.onmessage({ data: { pluginMessage: {
+  type: 'selection-summary', selectedCount: 1, exportableCount: 1, visibleExportableCount: 1,
+} } });
+const projectButton = bundled.document.getElementById('projects').children[0];
+assert.ok(projectButton, 'A discovered active server must appear as a selectable row.');
+projectButton.onclick();
+const selectedServer = bundled.parentMessages.at(-1).message.pluginMessage;
+assert.deepEqual(JSON.parse(JSON.stringify(selectedServer)), {
+  type: 'connect-to-bridge', url: 'http://localhost:3847', name: 'checkout · exported',
+});
+assert.equal(bundled.document.getElementById('export').disabled, true, 'Export stays disabled until the server connection succeeds.');
+await bundled.context.onmessage({ data: { pluginMessage: { type: 'connection-ready', url: 'http://localhost:3847' } } });
+assert.equal(bundled.document.getElementById('export').disabled, false, 'A successful selection enables export in the same panel.');
+assert.match(bundled.document.getElementById('status').textContent, /connected/i);
+assert.ok(!JSON.stringify(bundled.parentMessages).includes('session-secret'));
+
+const exportControl = bundled.document.getElementById('export');
+exportControl.onclick();
+const exportMessage = bundled.parentMessages.at(-1).message.pluginMessage;
+assert.equal(exportMessage.type, 'export-selection');
+assert.equal(exportMessage.connectionMode, 'local-server');
+assert.ok(!JSON.stringify(exportMessage).includes('token'));
+assert.ok(!JSON.stringify(exportMessage).includes('bridge'));
 
 bundled.document.getElementById('manual-url').value = 'http://localhost:3847/';
 bundled.document.getElementById('use-manual').onclick();
 const manual = bundled.parentMessages.at(-1).message.pluginMessage;
-assert.deepEqual(JSON.parse(JSON.stringify(manual)), { type: 'connect-to-bridge', url: 'http://localhost:3847' });
+assert.deepEqual(JSON.parse(JSON.stringify(manual)), { type: 'connect-to-bridge', url: 'http://localhost:3847', name: 'localhost:3847' });
 assert.ok(!JSON.stringify(bundled.parentMessages).includes('session-secret'));
 
-const requests = [];
-const local = createUi({
-  origin: 'http://localhost:3847', search: '?pluginId=assigned-plugin-id',
-  fetchImpl: async (url, options = {}) => {
-    requests.push({ url: String(url), options });
-    if (String(url).endsWith('/session')) return { ok: true, status: 200, json: async () => ({ token: 'session-secret' }) };
-    if (String(url).endsWith('/health')) return { ok: true, status: 200, json: async () => ({ projectName: 'checkout', exportDirectoryName: 'exported' }) };
-    if (String(url).endsWith('/export')) return { ok: true, status: 201, json: async () => ({ saved: 'screen.json', assets: [] }) };
-    throw new Error('Unexpected local UI request: ' + url);
-  },
-});
-await new Promise((resolve) => setImmediate(resolve));
-assert.ok(requests.some(({ url }) => url.endsWith('/session')), 'Local UI retrieves its session token from its own origin.');
-assert.ok(local.parentMessages.every(({ targetOrigin }) => targetOrigin === 'https://www.figma.com'));
-assert.ok(local.parentMessages.every(({ message }) => message.pluginId === 'assigned-plugin-id'));
-assert.ok(!JSON.stringify(local.parentMessages).includes('session-secret'), 'The token must never travel through Figma messages.');
-
-await local.context.onmessage({ data: { pluginMessage: {
-  type: 'save-exports', count: 1, includeAssets: true, warnings: [], skippedRenders: [],
-  entries: [{ filename: 'screen-visible-only.json', payload: { ok: true }, assets: [] }],
-} } });
-await new Promise((resolve) => setImmediate(resolve));
-const exportRequest = requests.find(({ url }) => url.endsWith('/export'));
-assert.ok(exportRequest, 'Local UI writes exports directly to the same-origin bridge.');
-assert.equal(exportRequest.options.headers['X-Figma-Mcp-Token'], 'session-secret');
-assert.equal(exportRequest.options.method, 'POST');
-assert.match(local.document.getElementById('status').textContent, /Exported 1 item/);
-console.log('Bundled discovery, URL-only fallback, local session retrieval, secure Figma messages, and same-origin exports passed.');
+const downloadStartup = createUi({ origin: 'null' });
+await downloadStartup.context.onmessage({ data: { pluginMessage: { type: 'connection-mode', connectionMode: 'download' } } });
+assert.ok(downloadStartup.parentMessages.some(({ message }) => message.pluginMessage?.type === 'scan-bridges'), 'Discovery refreshes on every run even when Download mode was last selected.');
+console.log('Every-run discovery, selectable active servers, in-panel connection feedback, URL-only fallback, and token-free UI messages passed.');

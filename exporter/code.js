@@ -1,15 +1,14 @@
 "use strict";
-const uiOptions = {
+figma.showUI(__html__, {
     width: 440,
     height: 480,
     themeColors: true,
-};
-let activeUiOrigin;
-let navigationTimeout;
-let navigationSequence = 0;
-let pendingConnectionError;
+});
+let activeBridgeOrigin;
+let activeBridgeToken;
+let connectionSequence = 0;
 function postToUi(message) {
-    figma.ui.postMessage(message, activeUiOrigin ? { origin: activeUiOrigin } : undefined);
+    figma.ui.postMessage(message);
 }
 function localBridgeOrigin(value) {
     if (typeof value !== 'string')
@@ -22,39 +21,47 @@ function localBridgeOrigin(value) {
         return null;
     return 'http://localhost:' + port;
 }
-function showBundledUiError(error) {
-    navigationSequence++;
-    if (navigationTimeout !== undefined)
-        clearTimeout(navigationTimeout);
-    navigationTimeout = undefined;
-    activeUiOrigin = undefined;
-    pendingConnectionError = error;
-    figma.showUI(__html__, uiOptions);
-}
-function connectToBridge(value) {
+async function connectToBridge(value, name) {
+    const sequence = ++connectionSequence;
+    activeBridgeOrigin = undefined;
+    activeBridgeToken = undefined;
     const origin = localBridgeOrigin(value);
     if (!origin) {
-        postToUi({ type: 'connection-error', error: 'Use http://localhost with a port from 3847 to 3867.' });
+        postToUi({ type: 'connection-error', url: value, error: 'Use http://localhost with a port from 3847 to 3867.' });
         return;
     }
-    if (!figma.pluginId) {
-        postToUi({ type: 'connection-error', error: 'This plugin needs a Figma-assigned plugin ID before local folder saving can connect. Download mode is still available.' });
-        return;
-    }
-    const sequence = ++navigationSequence;
-    if (navigationTimeout !== undefined)
-        clearTimeout(navigationTimeout);
-    activeUiOrigin = origin;
-    const pluginUiUrl = origin + '/plugin-ui?pluginId=' + encodeURIComponent(figma.pluginId);
-    const redirect = '<script>window.location.href=' + JSON.stringify(pluginUiUrl) + ';</script>';
-    figma.showUI(redirect, uiOptions);
-    navigationTimeout = setTimeout(() => {
-        if (sequence !== navigationSequence)
+    let timer;
+    try {
+        const response = await Promise.race([
+            fetch(origin + '/session', { cache: 'no-store' }),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('The local helper did not respond.')), 5000);
+            }),
+        ]);
+        if (!response.ok)
+            throw new Error(`The helper returned HTTP ${response.status}.`);
+        const session = await response.json();
+        if (!isRecord(session) || typeof session.token !== 'string' || !session.token) {
+            throw new Error('The helper returned an invalid local session.');
+        }
+        if (sequence !== connectionSequence)
             return;
-        showBundledUiError('The local connection screen did not load. Start the helper and refresh the folder list.');
-    }, 10000);
+        activeBridgeOrigin = origin;
+        activeBridgeToken = session.token;
+        const connectionName = name || origin.replace(/^http:\/\//, '');
+        postToUi({ type: 'connection-ready', url: origin, name: connectionName });
+        figma.notify(`Connected to ${connectionName}.`);
+    }
+    catch (error) {
+        if (sequence === connectionSequence) {
+            postToUi({ type: 'connection-error', url: origin, error: `Cannot connect to ${origin}. Start the helper and refresh the folder list. ${errorMessage(error)}` });
+        }
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
 }
-figma.showUI(__html__, uiOptions);
 const exportableNodeTypes = new Set(['FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE']);
 function getExportableSelection() {
     return figma.currentPage.selection.filter((node) => exportableNodeTypes.has(node.type));
@@ -71,13 +78,7 @@ function postSelectionSummary() {
 figma.on('selectionchange', postSelectionSummary);
 figma.ui.onmessage = async (message) => {
     if (message.type === 'connect-to-bridge') {
-        connectToBridge(message.url);
-        return;
-    }
-    if (message.type === 'local-ui-ready') {
-        if (navigationTimeout !== undefined)
-            clearTimeout(navigationTimeout);
-        navigationTimeout = undefined;
+        await connectToBridge(message.url, message.name);
         return;
     }
     if (message.type === 'get-connection-mode') {
@@ -90,10 +91,6 @@ figma.ui.onmessage = async (message) => {
         }
         catch {
             postToUi({ type: 'connection-mode', connectionMode: 'local-server' });
-        }
-        if (pendingConnectionError) {
-            postToUi({ type: 'connection-error', error: pendingConnectionError });
-            pendingConnectionError = undefined;
         }
         return;
     }
@@ -150,7 +147,9 @@ figma.ui.onmessage = async (message) => {
     if (message.type !== 'export-selection')
         return;
     const connectionMode = message.connectionMode === 'download' ? 'download' : 'local-server';
-    if (connectionMode === 'local-server' && !activeUiOrigin) {
+    const bridgeOrigin = activeBridgeOrigin;
+    const bridgeToken = activeBridgeToken;
+    if (connectionMode === 'local-server' && (!bridgeOrigin || !bridgeToken)) {
         postToUi({
             type: 'export-error',
             error: 'Select an active local folder before exporting to a project folder.',
@@ -164,6 +163,8 @@ figma.ui.onmessage = async (message) => {
     const nodes = exportMode === 'visible-only'
         ? selectedNodes.filter(isEffectivelyVisible)
         : selectedNodes;
+    const savedFiles = [];
+    const savedAssets = new Set();
     if (nodes.length === 0) {
         const error = exportMode === 'visible-only'
             ? 'Select one or more visible frames, components, component sets, or instances first, or choose No filter.'
@@ -276,18 +277,25 @@ figma.ui.onmessage = async (message) => {
             postToUi({ type: 'download-complete', count: exports.length, assetCount: assets.size, previewCount: exports.filter((entry) => entry.preview).length, warnings, skippedRenders, connectionMode });
             return;
         }
-        postToUi({
-            type: 'save-exports',
-            count: exports.length,
-            entries: exports.map(({ filename, payload, assets, preview }) => ({ filename, payload, assets, preview })),
-            warnings,
-            skippedRenders,
-            includeAssets,
-            connectionMode,
-        });
+        for (const entry of exports) {
+            const result = await sendToBridge(bridgeOrigin, bridgeToken, JSON.stringify({ filename: entry.filename, payload: entry.payload, assets: entry.assets, preview: entry.preview }));
+            if (!isRecord(result) || typeof result.saved !== 'string') {
+                throw new Error(`Server ${bridgeOrigin} did not confirm a saved filename. Check the helper terminal and export folder before retrying.`);
+            }
+            savedFiles.push(result.saved);
+            if (typeof result.preview === 'string')
+                savedFiles.push(result.preview);
+            if (Array.isArray(result.assets)) {
+                result.assets.forEach((filename) => {
+                    if (typeof filename === 'string')
+                        savedAssets.add(filename);
+                });
+            }
+        }
+        postToUi({ type: 'export-complete', count: exports.length, files: savedFiles, assets: [...savedAssets], warnings, skippedRenders, includeAssets, connectionMode });
     }
     catch (error) {
-        postToUi({ type: 'export-error', error: errorMessage(error), includeAssets, connectionMode });
+        postToUi({ type: 'export-error', error: errorMessage(error), files: savedFiles, assets: [...savedAssets], includeAssets, connectionMode });
     }
 };
 function errorMessage(error) {
@@ -304,6 +312,48 @@ function errorMessage(error) {
             return details.join(': ');
     }
     return 'No error details were provided.';
+}
+async function sendToBridge(url, token, body) {
+    let timer;
+    try {
+        return await Promise.race([
+            (async () => {
+                let response;
+                try {
+                    response = await fetch(`${url}/export`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-Figma-Mcp-Token': token },
+                        body,
+                    });
+                }
+                catch (error) {
+                    throw new Error(`Cannot reach the local server at ${url}. Start the helper in your target folder and select it again. Details: ${errorMessage(error)}`);
+                }
+                if (!response.ok) {
+                    const text = await response.text();
+                    let detail = text;
+                    try {
+                        detail = errorMessage(JSON.parse(text));
+                    }
+                    catch { }
+                    throw new Error(`Server ${url} could not save the export (HTTP ${response.status}). ${detail || 'Check the helper terminal for details.'}`);
+                }
+                try {
+                    return await response.json();
+                }
+                catch {
+                    throw new Error(`Server ${url} returned an invalid response. Check the helper terminal and export folder before retrying.`);
+                }
+            })(),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`Server ${url} did not respond within 15 seconds. Check the helper terminal. Files may already have been saved; check the export folder before retrying.`)), 15000);
+            }),
+        ]);
+    }
+    finally {
+        if (timer !== undefined)
+            clearTimeout(timer);
+    }
 }
 function removeInvisibleNodes(value) {
     if (Array.isArray(value)) {
