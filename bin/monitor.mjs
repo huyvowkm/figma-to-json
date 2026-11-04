@@ -8,6 +8,7 @@ import { codexConfig, readTools } from './codex-config.mjs';
 import { forgetServer, processAlive, serverName, trackedServers } from './server-state.mjs';
 import { removeRegistration } from './registration.mjs';
 import { displayPath } from './display-path.mjs';
+import { readBridgeState } from './bridge-state.mjs';
 
 const serverScript = fileURLToPath(new URL('../server/dist/index.js', import.meta.url));
 const configuredServers = () => JSON.parse(execFileSync('codex', ['mcp', 'list', '--json'], {
@@ -90,8 +91,12 @@ export async function stopServer(name, rows) {
     throw new Error(`${name} changed since the last refresh. Refresh before stopping it.`);
   }
   if (!health.supportsShutdown) throw new Error(`${name} uses an older bridge. Stop it in its original terminal and restart the updated launcher.`);
+  const localState = readBridgeState(health.instanceId);
+  const token = localState?.token ?? health.token;
+  if (!token) throw new Error(`${name} has no local shutdown token. Stop it in its original terminal and restart the helper.`);
+  if (localState && localState.instanceId !== health.instanceId) throw new Error(`${name} local state changed since the last refresh. Refresh before stopping it.`);
   const response = await fetch(`http://localhost:${row.port}/shutdown`, {
-    method: 'POST', headers: { 'X-Figma-Mcp-Token': health.token }, signal: AbortSignal.timeout(3000),
+    method: 'POST', headers: { 'X-Figma-Mcp-Token': token }, signal: AbortSignal.timeout(3000),
   });
   if (!response.ok) throw new Error(`Shutdown rejected for ${name} (HTTP ${response.status}).`);
   for (let attempt = 0; attempt < 40; attempt += 1) {

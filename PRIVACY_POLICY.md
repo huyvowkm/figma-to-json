@@ -9,9 +9,10 @@ Design to JSON exports design content that you select in Figma Design.
 - The selected frames, components, component sets, or instances and their design data.
 - Detected image and SVG assets when **JSON + assets** is selected.
 - A PNG frame preview when **PNG preview** is selected.
-- The selected export destination, saved in Figma client storage as a preference.
+- The selected connection mode, saved in Figma client storage as a preference.
+- A random local bridge token used to authorize folder exports.
 
-The plugin does not save exported design content or bridge tokens in Figma client storage.
+The plugin does not save exported design content, local folder paths, or bridge tokens in Figma client storage. For local saves, the token is printed in the helper terminal and entered in the plugin by the user; folder discovery does not return it. The helper keeps the token in a user-private temporary file so its local monitor can stop the helper, then removes the file when it exits normally.
 
 ## Where exported data goes
 

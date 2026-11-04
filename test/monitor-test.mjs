@@ -70,7 +70,8 @@ try {
   const health = await fetch(`http://localhost:${row.port}/health`).then((r) => r.json());
   const json = run('status', '--json');
   assert.equal(JSON.parse(json).filter(owned).length, 2);
-  assert.ok(!json.includes(health.token), 'Status must never expose the connection token');
+  assert.equal(Object.hasOwn(health, 'token'), false, 'Health discovery must not expose the connection token');
+  assert.ok(!json.includes('"token"'), 'Status must never expose the connection token');
   const forbidden = await fetch(`http://localhost:${row.port}/shutdown`, { method: 'POST' });
   assert.equal(forbidden.status, 403, 'Stopping requires authentication');
   assert.equal((await fetch(`http://localhost:${row.port}/health`)).status, 200);
@@ -226,7 +227,7 @@ finally:
   await stopServer(active.name);
   await second.child.done;
   assert.match(run('clean'), /Cleaned:/);
-  console.log('Monitor passed: live/JSON status, seven approvals, exports, authenticated stop, PTY monitor, instance checks, stale cleanup, custom ports, and unrelated config preservation.');
+  console.log('Monitor passed: live/JSON status, seven approvals, exports, verified process stop, PTY monitor, instance checks, stale cleanup, custom ports, and unrelated config preservation.');
 } finally {
   for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
   await Promise.all(children.map((child) => child.done));

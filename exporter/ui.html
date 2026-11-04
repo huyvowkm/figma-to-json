@@ -51,7 +51,7 @@
       <div class="local-only" id="local-controls">
         <div class="card"><div class="header"><strong>Active folders</strong><button id="refresh">Refresh</button></div><div id="projects"></div></div>
         <button id="manual-toggle" aria-expanded="false">Manual connection</button>
-        <div class="card" id="manual-panel" hidden><div class="header"><strong>Manual connection</strong></div><input id="manual-url" placeholder="Bridge URL, e.g. http://localhost:3847" /><input id="manual-token" placeholder="Bridge token from the running helper" /><button id="use-manual">Use connection</button></div>
+        <div class="card" id="manual-panel" hidden><div class="header"><strong>Manual connection</strong></div><input id="manual-url" placeholder="Bridge URL, e.g. http://localhost:3847" /><input id="manual-token" type="password" autocomplete="off" placeholder="Bridge token from the running helper" /><button id="use-manual">Use connection</button></div>
       </div>
       <div id="selection-summary" role="status" aria-live="polite">Checking selected items…</div>
       <div class="mode-field"><label for="export-mode">Export mode</label><select id="export-mode" aria-describedby="mode-help"><option value="visible-only">Visible only</option><option value="no-filter">No filter</option></select><p class="mode-help" id="mode-help"></p></div>
@@ -67,7 +67,7 @@
       <p>Choose where the exported JSON goes. This choice is saved for next time.</p>
       <section class="mode-option">
         <label><input type="radio" name="connection-mode" value="local-server" /><span><strong>Save to project folder</strong><small>Save JSON and optional assets to a project folder through a local bridge.</small></span></label>
-        <div class="mode-guide"><strong>How to use</strong><ol><li>Run <code>node "/path/to/figma-to-json/bin/bridge.mjs" "/path/to/project" "/path/to/project/.figma-cache"</code> in a terminal. Keep it running.</li><li>Select the active folder, or enter the bridge URL and token manually.</li><li>Export. JSON goes into <code>.figma-cache/exported</code>; assets go into <code>.figma-cache/assets</code>.</li></ol></div>
+        <div class="mode-guide"><strong>How to use</strong><ol><li>Run <code>node "/path/to/figma-to-json/bin/bridge.mjs" "/path/to/project" "/path/to/project/.figma-cache"</code> in a terminal. Keep it running.</li><li>Select the active folder, then paste the token printed in the helper terminal. For a custom server, enter its URL and token manually.</li><li>Export. JSON goes into <code>.figma-cache/exported</code>; assets go into <code>.figma-cache/assets</code>.</li></ol></div>
       </section>
       <section class="mode-option">
         <label><input type="radio" name="connection-mode" value="download" /><span><strong>Download JSON</strong><small>Export files from Figma without starting a local server.</small></span></label>
@@ -101,7 +101,7 @@
         : exportableSelectionCount;
       const updateExportButton = () => {
         const needsBridge = connectionMode === 'local-server';
-        exportButton.disabled = exporting || getCurrentExportableCount() === 0 || (needsBridge && !active);
+        exportButton.disabled = exporting || getCurrentExportableCount() === 0 || (needsBridge && (!active || !active.token));
         exportButton.setAttribute('aria-busy', String(exporting));
         exportButton.textContent = exporting
           ? (connectionMode === 'download' ? 'Preparing…' : 'Exporting…')
@@ -198,7 +198,6 @@
             name: (data.project || data.exportDirectory || 'Folder').split(/[\\/]/).filter(Boolean).pop() || 'Folder',
             exportDirectory: data.exportDirectory || '',
             url: `http://localhost:${data.port}`,
-            token: data.token,
           };
           const button = document.createElement('button');
           button.className = `project${active?.url === project.url ? ' selected' : ''}`;
@@ -212,9 +211,13 @@
             button.appendChild(check);
           }
           button.onclick = () => {
-            active = project;
+            active = { ...project, token: '' };
+            document.getElementById('manual-url').value = project.url;
+            document.getElementById('manual-token').value = '';
+            document.getElementById('manual-panel').hidden = false;
             renderTarget();
-            parent.postMessage({ pluginMessage: { type: 'scan-bridges' } }, '*');
+            status.textContent = 'Paste the token printed in the helper terminal, then choose Use connection.';
+            document.getElementById('manual-token').focus();
           };
           container.appendChild(button);
         });
@@ -266,7 +269,7 @@
       renderTarget();
       status.textContent = 'Loading saved settings…';
       exportButton.onclick = () => {
-        if (connectionMode === 'local-server' && (!active || !active.token)) { status.textContent = 'Select an active local folder first.'; return; }
+        if (connectionMode === 'local-server' && (!active || !active.token)) { status.textContent = 'Select a folder and enter its helper token first.'; return; }
         if (!getCurrentExportableCount()) { status.textContent = 'Select at least one exportable item first.'; return; }
         exportingTo = connectionMode === 'download' ? 'your browser Downloads folder' : active.name;
         clearExportResults();

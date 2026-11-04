@@ -1,6 +1,6 @@
 # Design to JSON
 
-Export selected frames and components from Figma Design as JSON, with optional assets and PNG previews. Works with a free Figma Starter account; no API token is needed.
+Export selected frames and components from Figma Design as JSON, with optional assets and PNG previews. Works with a free Figma Starter account; no Figma API token is needed.
 
 ## Quick setup
 
@@ -44,7 +44,8 @@ In Figma Desktop:
     node bin/bridge.mjs /path/to/project /path/to/project/.figma-cache
     ```
 
-  - In **Settings**, choose **Save to project folder** and select the active folder.
+  - In **Settings**, choose **Save to project folder**, then return to the main view and select the active folder.
+  - Paste the token printed in the helper terminal into the connection field and click **Use connection**.
   - Select frames or components, set the export options, and click **Export selected**.
   - Files are saved here:
     - JSON: `.figma-cache/exported/`

@@ -43,6 +43,7 @@ try {
   assert.equal(health.port, port);
   assert.equal(health.project, root);
   assert.equal(health.exportDirectory, join(cache, 'exported'));
+  assert.equal(Object.hasOwn(health, 'token'), false, 'Discovery must not expose the connection token');
   console.log('Occupied-port retry reports one accurate URL, token, and export folder.');
 } finally {
   const stopped = once(child, 'close');

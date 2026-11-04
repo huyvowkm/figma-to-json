@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { removeRegistration } from './registration.mjs';
+import { removeBridgeState, writeBridgeState } from './bridge-state.mjs';
 
 let registration;
 process.on('message', (message) => {
@@ -63,7 +64,7 @@ function writeAssets(assets) {
 const bridge = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') return send(res, 204, {});
   if (req.method === 'GET' && req.url === '/health') return send(res, 200, {
-    project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port, token,
+    project: root, exportDirectory: join(cache, 'exported'), port: bridge.address()?.port,
     instanceId, startedAt, pid: process.pid, launcherPid: process.ppid,
     server: registration?.server, supportsShutdown: true,
   });
@@ -95,6 +96,8 @@ const bridge = http.createServer((req, res) => {
   });
 });
 bridge.once('listening', () => {
+  writeBridgeState({ token, instanceId });
+  process.once('exit', () => removeBridgeState(instanceId));
   process.send?.({ type: 'ready', port: bridge.address().port, pid: process.pid, instanceId, startedAt });
   console.log(`Figma bridge ready: http://localhost:${bridge.address().port}\nToken: ${token}\nExport folder: ${join(cache, 'exported')}`);
 });
