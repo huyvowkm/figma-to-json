@@ -2,7 +2,7 @@
 
 Effective date: November 4, 2026
 
-Figma to JSON exports design content that you select in a Figma file.
+Design to JSON exports design content that you select in Figma Design.
 
 ## Data the plugin processes
 

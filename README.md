@@ -1,6 +1,6 @@
-# Figma to JSON
+# Design to JSON
 
-Export selected Figma frames and components as JSON, with optional assets and PNG previews. Works with a free Figma Starter account; no API token is needed.
+Export selected frames and components from Figma Design as JSON, with optional assets and PNG previews. Works with a free Figma Starter account; no API token is needed.
 
 ## Quick setup
 
@@ -17,7 +17,7 @@ In Figma Desktop:
 
 - Go to **Plugins → Development → Import plugin from manifest…**.
 - Select `exporter/manifest.json`.
-- Select a frame and run **Figma to JSON**.
+- Select a frame and run **Design to JSON**.
 
 ## Export settings
 
